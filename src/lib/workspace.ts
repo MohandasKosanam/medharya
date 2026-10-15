@@ -1,4 +1,5 @@
 import type { ProjectRequest } from "@/types/project";
+import type { ResearchClaim, ResearchEvidence, ResearchFinding, ResearchSource } from "@/types/research";
 import type { WorkspaceMessage, ProjectMemory, ProjectWorkspace, WorkspaceRequestPatch } from "@/types/workspace";
 
 import { generateSolutionPlan } from "./recommendations";
@@ -79,6 +80,9 @@ export function createProjectWorkspace(request: ProjectRequest): ProjectWorkspac
     messages: [message("assistant", welcome, "deterministic-fallback")],
     memory: initialMemory(request, plan.openQuestions, plan.version),
     researchFindings: [],
+    researchSources: [],
+    researchEvidence: [],
+    researchClaims: [],
     plan,
     createdAt,
     updatedAt: createdAt,
@@ -186,4 +190,28 @@ export function appendResearchFindings(
     researchFindings: merged.slice(-30),
     updatedAt: now(),
   });
+}
+
+export function appendResearchBundle(
+  workspace: ProjectWorkspace,
+  bundle: {
+    findings: ResearchFinding[];
+    sources?: ResearchSource[];
+    evidence?: ResearchEvidence[];
+    claims?: ResearchClaim[];
+  },
+): ProjectWorkspace {
+  const next = appendResearchFindings(workspace, bundle.findings);
+  const sourceById = new Map((next.researchSources ?? []).map((source) => [source.id, source]));
+  for (const source of bundle.sources ?? []) sourceById.set(source.id, source);
+  const evidenceById = new Map((next.researchEvidence ?? []).map((item) => [item.id, item]));
+  for (const item of bundle.evidence ?? []) evidenceById.set(item.id, item);
+  const claimById = new Map((next.researchClaims ?? []).map((claim) => [claim.id, claim]));
+  for (const claim of bundle.claims ?? []) claimById.set(claim.id, claim);
+  return {
+    ...next,
+    researchSources: [...sourceById.values()].slice(-100),
+    researchEvidence: [...evidenceById.values()].slice(-100),
+    researchClaims: [...claimById.values()].slice(-100),
+  };
 }

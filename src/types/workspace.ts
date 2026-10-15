@@ -1,5 +1,5 @@
 import type { ProjectRequest } from "@/types/project";
-import type { ResearchFinding } from "@/types/research";
+import type { ResearchClaim, ResearchEvidence, ResearchFinding, ResearchSource } from "@/types/research";
 import type { SolutionPlan } from "@/types/solution";
 import type { ProjectOperatingSystem } from "@/types/operating-system";
 
@@ -43,6 +43,10 @@ export interface ProjectWorkspace {
   messages: WorkspaceMessage[];
   memory: ProjectMemory;
   researchFindings: ResearchFinding[];
+  /** Optional so existing browser-local records can be upgraded defensively. */
+  researchSources?: ResearchSource[];
+  researchEvidence?: ResearchEvidence[];
+  researchClaims?: ResearchClaim[];
   plan: SolutionPlan;
   /** Optional for backwards compatibility with Phase 2 browser records. */
   operatingSystem?: ProjectOperatingSystem;
