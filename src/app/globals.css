@@ -2138,6 +2138,31 @@ input[aria-invalid="true"] {
   font-size: 0.58rem;
 }
 
+.workspace-live-indicator.provider-state-configured {
+  color: #e3c47e;
+}
+
+.workspace-live-indicator.provider-state-connecting {
+  color: #bfb7ff;
+}
+
+.workspace-live-indicator.provider-state-degraded,
+.workspace-live-indicator.provider-state-unavailable {
+  color: #e5a0a0;
+}
+
+.workspace-live-indicator.provider-state-configured i,
+.workspace-live-indicator.provider-state-connecting i {
+  background: #e3c47e;
+  box-shadow: 0 0 0 4px rgba(227, 196, 126, 0.1);
+}
+
+.workspace-live-indicator.provider-state-degraded i,
+.workspace-live-indicator.provider-state-unavailable i {
+  background: #e5a0a0;
+  box-shadow: 0 0 0 4px rgba(229, 160, 160, 0.1);
+}
+
 .chat-history {
   display: grid;
   gap: 17px;
@@ -2240,6 +2265,13 @@ input[aria-invalid="true"] {
   color: var(--ink-subtle);
   font-size: 0.6rem;
   line-height: 1.45;
+}
+
+.provider-last-success {
+  margin-top: -4px;
+  color: var(--ink-subtle);
+  font-family: var(--font-mono), monospace;
+  font-size: 0.5rem;
 }
 
 .chat-error {

@@ -2,6 +2,7 @@
 
 import { useState, type KeyboardEvent } from "react";
 
+import type { ModelProviderStatus } from "@/lib/providers/types";
 import type { WorkspaceMessage } from "@/types/workspace";
 
 type WorkspaceChatProps = {
@@ -9,6 +10,7 @@ type WorkspaceChatProps = {
   isSending: boolean;
   error: string | null;
   notice: string | null;
+  providerStatus: ModelProviderStatus | null;
   onSend: (content: string) => void;
   onRetry?: () => void;
 };
@@ -25,7 +27,20 @@ function timeLabel(value: string) {
   return Number.isNaN(date.valueOf()) ? "" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function WorkspaceChat({ messages, isSending, error, notice, onSend, onRetry }: WorkspaceChatProps) {
+function providerStatusLabel(status: ModelProviderStatus | null) {
+  if (!status || status.provider === "none") return "Deterministic fallback active";
+  const name = status.provider === "medharya-alpha" ? "Medharya Alpha" : status.provider;
+  if (status.state === "ready" && status.identityVerified === false && status.provider === "medharya-alpha") {
+    return `${name} ready · identity not attested`;
+  }
+  if (status.state === "ready") return `${name} ready`;
+  if (status.state === "connecting") return `${name} initializing`;
+  if (status.state === "degraded") return `${name} temporarily unavailable`;
+  if (status.state === "unavailable") return `${name} unavailable`;
+  return `${name} configured · checking`;
+}
+
+export function WorkspaceChat({ messages, isSending, error, notice, providerStatus, onSend, onRetry }: WorkspaceChatProps) {
   const [draft, setDraft] = useState("");
 
   function send() {
@@ -49,7 +64,7 @@ export function WorkspaceChat({ messages, isSending, error, notice, onSend, onRe
           <p className="eyebrow">Project conversation</p>
           <h2 id="workspace-chat-title">Think it through with Medharya.</h2>
         </div>
-        <span className="workspace-live-indicator"><i aria-hidden="true" /> Context linked</span>
+        <span className={`workspace-live-indicator provider-state-${providerStatus?.state ?? "configured"}`}><i aria-hidden="true" /> {providerStatusLabel(providerStatus)}</span>
       </div>
       <div className="chat-history" aria-live="polite">
         {messages.map((message) => (
@@ -84,6 +99,7 @@ export function WorkspaceChat({ messages, isSending, error, notice, onSend, onRe
         </div>
       ) : null}
       {notice ? <p className="workspace-inline-note" role="status">{notice}</p> : null}
+      {providerStatus?.lastSuccessfulInferenceAt ? <p className="workspace-inline-note provider-last-success" role="status">Last successful inference: {new Date(providerStatus.lastSuccessfulInferenceAt).toLocaleString()}</p> : null}
       <div className="chat-composer">
         <label className="sr-only" htmlFor="workspace-message">Message Medharya</label>
         <textarea

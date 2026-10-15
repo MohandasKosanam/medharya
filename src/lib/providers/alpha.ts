@@ -1,9 +1,12 @@
+import { createHash } from "node:crypto";
+
 import {
   PROVIDER_ERROR_REASONS,
   type ModelPrompt,
   type ModelProvider,
   type ModelProviderResult,
   type ModelProviderUsage,
+  type ModelProviderStatus,
   type ProviderErrorReason,
 } from "./types";
 
@@ -85,9 +88,13 @@ export interface MedharyaAlphaLastSuccessMetadata {
 }
 
 export interface MedharyaAlphaHealthStatus {
+  provider: typeof ALPHA_PROVIDER_ID;
   state: MedharyaAlphaHealthState;
   // `status` mirrors `state` for callers that use status-oriented health APIs.
   status: MedharyaAlphaHealthState;
+  model?: string;
+  baseModel?: string;
+  adapterVersion?: string;
   checkedAt?: string;
   httpStatus?: number;
   reason?: ProviderErrorReason;
@@ -98,6 +105,8 @@ export interface MedharyaAlphaHealthStatus {
   };
   lastSuccess?: MedharyaAlphaLastSuccessMetadata;
   lastSuccessAt?: string;
+  lastSuccessfulInferenceAt?: string;
+  identityVerified?: boolean;
 }
 
 export interface MedharyaAlphaProvider extends ModelProvider {
@@ -129,6 +138,7 @@ interface AlphaQueueEntry<T> {
 
 let activeAlphaRequests = 0;
 const alphaRequestQueue: Array<AlphaQueueEntry<unknown>> = [];
+const alphaRuntimeStatuses = new Map<string, MedharyaAlphaHealthStatus>();
 
 class AlphaQueueCapacityError extends Error {
   constructor() {
@@ -369,6 +379,12 @@ function unavailable(reason: ProviderErrorReason, model: string | null): ModelPr
   };
 }
 
+function alphaConfigKey(config: NormalizedAlphaConfig) {
+  return createHash("sha256")
+    .update(`${config.baseUrl}\n${config.apiKey}\n${config.model}\n${config.baseModel ?? ""}\n${config.adapterVersion ?? ""}`)
+    .digest("hex");
+}
+
 function isAbortError(error: unknown) {
   return (error instanceof Error && error.name === "AbortError") || (isRecord(error) && error.name === "AbortError");
 }
@@ -475,6 +491,18 @@ async function requestAlphaOnce(
         const normalized = normalizeMedharyaAlphaResponse(payload);
         if (!normalized) return unavailable(PROVIDER_ERROR_REASONS.invalidResponse, config.model);
 
+        if (
+          normalized.model && normalized.model !== config.model ||
+          config.baseModel && normalized.baseModel && normalized.baseModel !== config.baseModel ||
+          config.adapterVersion && normalized.adapterVersion && normalized.adapterVersion !== config.adapterVersion
+        ) {
+          return unavailable(PROVIDER_ERROR_REASONS.invalidResponse, config.model);
+        }
+
+        const identityVerified = Boolean(normalized.model && normalized.model === config.model) &&
+          (!config.baseModel || Boolean(normalized.baseModel && normalized.baseModel === config.baseModel)) &&
+          (!config.adapterVersion || Boolean(normalized.adapterVersion && normalized.adapterVersion === config.adapterVersion));
+
         return {
           status: "available",
           text: normalized.text,
@@ -483,6 +511,7 @@ async function requestAlphaOnce(
           ...(normalized.baseModel ? { baseModel: normalized.baseModel } : {}),
           ...(normalized.adapterVersion ? { adapterVersion: normalized.adapterVersion } : {}),
           ...(normalized.usage ? { usage: normalized.usage } : {}),
+          identityVerified,
         };
       } catch (error) {
         return unavailable(reasonFromRequestError(error), config.model);
@@ -511,15 +540,54 @@ export async function requestMedharyaAlpha(
 
 function healthState(
   state: MedharyaAlphaHealthState,
-  details: Omit<MedharyaAlphaHealthStatus, "state" | "status"> = {},
+  details: Omit<MedharyaAlphaHealthStatus, "state" | "status" | "provider"> = {},
 ): MedharyaAlphaHealthStatus {
-  return { state, status: state, ...details };
+  return { provider: ALPHA_PROVIDER_ID, state, status: state, ...details };
 }
 
 function statusForConfiguration(options: MedharyaAlphaProviderOptions): MedharyaAlphaHealthStatus {
-  return normalizeAlphaConfig(options)
-    ? healthState("configured")
-    : healthState("unavailable", { reason: PROVIDER_ERROR_REASONS.missingConfig });
+  const config = normalizeAlphaConfig(options);
+  if (!config) return healthState("unavailable", { reason: PROVIDER_ERROR_REASONS.missingConfig });
+  return alphaRuntimeStatuses.get(alphaConfigKey(config)) ?? healthState("configured", {
+    model: config.model,
+    baseModel: config.baseModel,
+    adapterVersion: config.adapterVersion,
+    identityVerified: false,
+  });
+}
+
+function rememberAlphaStatus(config: NormalizedAlphaConfig, status: MedharyaAlphaHealthStatus) {
+  alphaRuntimeStatuses.set(alphaConfigKey(config), status);
+  return status;
+}
+
+function providerStatusForAlpha(
+  status: MedharyaAlphaHealthStatus,
+  config: NormalizedAlphaConfig,
+): ModelProviderStatus {
+  return {
+    provider: ALPHA_PROVIDER_ID,
+    state: status.state,
+    model: status.observed?.model ?? config.model,
+    ...(status.observed?.baseModel ?? config.baseModel ? { baseModel: status.observed?.baseModel ?? config.baseModel } : {}),
+    ...(status.observed?.adapterVersion ?? config.adapterVersion
+      ? { adapterVersion: status.observed?.adapterVersion ?? config.adapterVersion }
+      : {}),
+    ...(status.checkedAt ? { checkedAt: status.checkedAt } : {}),
+    ...(status.lastSuccessfulInferenceAt
+      ? { lastSuccessfulInferenceAt: status.lastSuccessfulInferenceAt }
+      : {}),
+    ...(status.reason ? { reason: status.reason } : {}),
+    identityVerified: status.identityVerified ?? false,
+  };
+}
+
+function previousInferenceDetails(
+  previous?: MedharyaAlphaHealthStatus,
+): { lastSuccessfulInferenceAt?: string } {
+  return previous?.lastSuccessfulInferenceAt
+    ? { lastSuccessfulInferenceAt: previous.lastSuccessfulInferenceAt }
+    : {};
 }
 
 function previousSuccessDetails(
@@ -552,6 +620,7 @@ function healthFailure(
         }
       : {}),
     ...lastSuccess,
+    ...(previous && "state" in previous ? previousInferenceDetails(previous) : {}),
   });
 }
 
@@ -559,10 +628,11 @@ interface AlphaHealthEvaluation {
   state: "ready" | "degraded";
   reason?: ProviderErrorReason;
   observed?: NormalizedMedharyaAlphaResponse;
+  identityVerified: boolean;
 }
 
 function evaluateHealthPayload(value: unknown, config: NormalizedAlphaConfig): AlphaHealthEvaluation {
-  if (!isRecord(value)) return { state: "degraded", reason: PROVIDER_ERROR_REASONS.invalidResponse };
+  if (!isRecord(value)) return { state: "degraded", reason: PROVIDER_ERROR_REASONS.invalidResponse, identityVerified: false };
 
   const model = metadataText(value.model);
   const baseModel = metadataText(value.base_model ?? value.baseModel);
@@ -599,6 +669,9 @@ function evaluateHealthPayload(value: unknown, config: NormalizedAlphaConfig): A
   const expectedModelMismatch = Boolean(config.model && model && config.model !== model);
   const expectedBaseModelMismatch = Boolean(config.baseModel && baseModel && config.baseModel !== baseModel);
   const expectedAdapterMismatch = Boolean(config.adapterVersion && adapterVersion && config.adapterVersion !== adapterVersion);
+  const identityVerified = Boolean(model && model === config.model) &&
+    (!config.baseModel || Boolean(baseModel && baseModel === config.baseModel)) &&
+    (!config.adapterVersion || Boolean(adapterVersion && adapterVersion === config.adapterVersion));
 
   if (
     !hasHealthSignal ||
@@ -611,12 +684,14 @@ function evaluateHealthPayload(value: unknown, config: NormalizedAlphaConfig): A
     return {
       state: "degraded",
       reason: PROVIDER_ERROR_REASONS.invalidResponse,
+      identityVerified,
       ...(model || baseModel || adapterVersion ? { observed } : {}),
     };
   }
 
   return {
     state: "ready",
+    identityVerified,
     ...(model || baseModel || adapterVersion ? { observed } : {}),
   };
 }
@@ -677,6 +752,10 @@ export async function checkMedharyaAlphaHealth(
       return healthState("degraded", {
         checkedAt,
         reason: evaluation.reason ?? PROVIDER_ERROR_REASONS.invalidResponse,
+        model: config.model,
+        baseModel: config.baseModel,
+        adapterVersion: config.adapterVersion,
+        identityVerified: evaluation.identityVerified,
         ...(observed && (observed.model || observed.baseModel || observed.adapterVersion)
           ? {
               observed: {
@@ -687,6 +766,7 @@ export async function checkMedharyaAlphaHealth(
             }
           : {}),
         ...previousSuccessDetails(previous),
+        ...(previous && "state" in previous ? previousInferenceDetails(previous) : {}),
       });
     }
 
@@ -698,6 +778,10 @@ export async function checkMedharyaAlphaHealth(
     };
     return healthState("ready", {
       checkedAt,
+      model: config.model,
+      baseModel: config.baseModel,
+      adapterVersion: config.adapterVersion,
+      identityVerified: evaluation.identityVerified,
       ...(observed && (observed.model || observed.baseModel || observed.adapterVersion)
         ? {
             observed: {
@@ -709,6 +793,7 @@ export async function checkMedharyaAlphaHealth(
         : {}),
       lastSuccess,
       lastSuccessAt: checkedAt,
+      ...(previous && "state" in previous ? previousInferenceDetails(previous) : {}),
     });
   } catch (error) {
     return healthFailure(reasonFromRequestError(error), previous);
@@ -721,25 +806,120 @@ export function getMedharyaAlphaHealthStatus(
   return statusForConfiguration(alphaOptionsFromInput(options));
 }
 
+export function toMedharyaAlphaProviderStatus(
+  status: MedharyaAlphaHealthStatus,
+  options: MedharyaAlphaProviderOptions | GetConfiguredMedharyaAlphaProviderOptions = {},
+): ModelProviderStatus {
+  const providerOptions = alphaOptionsFromInput(options);
+  const config = normalizeAlphaConfig(providerOptions);
+  return config
+    ? providerStatusForAlpha(status, config)
+    : {
+        provider: ALPHA_PROVIDER_ID,
+        state: "unavailable",
+        ...(configuredValue(providerOptions.model) ? { model: configuredValue(providerOptions.model) ?? undefined } : {}),
+        reason: PROVIDER_ERROR_REASONS.missingConfig,
+        identityVerified: false,
+      };
+}
+
 export function createMedharyaAlphaProvider(options: MedharyaAlphaProviderOptions): MedharyaAlphaProvider {
   const model = configuredValue(options.model) ?? "";
+  const initialConfig = normalizeAlphaConfig(options);
   let currentStatus = statusForConfiguration(options);
 
   return {
     name: "Medharya Alpha provider",
     model,
-    complete(prompt: ModelPrompt) {
-      return requestMedharyaAlpha(options, prompt, options.request);
+    async complete(prompt: ModelPrompt) {
+      const config = normalizeAlphaConfig({ ...options, request: options.request });
+      if (!config) return requestMedharyaAlpha(options, prompt, options.request);
+      currentStatus = rememberAlphaStatus(config, healthState("connecting", {
+        model: config.model,
+        baseModel: config.baseModel,
+        adapterVersion: config.adapterVersion,
+        identityVerified: currentStatus.identityVerified ?? false,
+        ...previousSuccessDetails(currentStatus),
+        ...previousInferenceDetails(currentStatus),
+      }));
+      const result = await requestAlphaOnce(config, prompt);
+      const checkedAt = new Date().toISOString();
+      if (result.status === "available") {
+        const identityVerified = Boolean(result.model && result.model === config.model) &&
+          (!config.baseModel || Boolean(result.baseModel && result.baseModel === config.baseModel)) &&
+          (!config.adapterVersion || Boolean(result.adapterVersion && result.adapterVersion === config.adapterVersion)) &&
+          result.identityVerified !== false;
+        const lastSuccess: MedharyaAlphaLastSuccessMetadata = {
+          checkedAt,
+          ...(result.model ? { model: result.model } : {}),
+          ...(result.baseModel ? { baseModel: result.baseModel } : {}),
+          ...(result.adapterVersion ? { adapterVersion: result.adapterVersion } : {}),
+        };
+        currentStatus = healthState("ready", {
+          checkedAt,
+          model: config.model,
+          baseModel: config.baseModel,
+          adapterVersion: config.adapterVersion,
+          identityVerified,
+          lastSuccess,
+          lastSuccessAt: checkedAt,
+          lastSuccessfulInferenceAt: checkedAt,
+          ...(result.model || result.baseModel || result.adapterVersion
+            ? {
+                observed: {
+                  ...(result.model ? { model: result.model } : {}),
+                  ...(result.baseModel ? { baseModel: result.baseModel } : {}),
+                  ...(result.adapterVersion ? { adapterVersion: result.adapterVersion } : {}),
+                },
+              }
+            : {}),
+        });
+      } else {
+        currentStatus = healthState(currentStatus.lastSuccess ? "degraded" : "unavailable", {
+          checkedAt,
+          model: config.model,
+          baseModel: config.baseModel,
+          adapterVersion: config.adapterVersion,
+          reason: result.reason,
+          identityVerified: currentStatus.identityVerified ?? false,
+          ...previousSuccessDetails(currentStatus),
+          ...previousInferenceDetails(currentStatus),
+        });
+      }
+      rememberAlphaStatus(config, currentStatus);
+      return {
+        ...result,
+        providerStatus: providerStatusForAlpha(currentStatus, config),
+      };
     },
     async health() {
+      const config = initialConfig ?? normalizeAlphaConfig(options);
       currentStatus = healthState("connecting", {
+        ...(config?.model ? { model: config.model } : {}),
+        ...(config?.baseModel ? { baseModel: config.baseModel } : {}),
+        ...(config?.adapterVersion ? { adapterVersion: config.adapterVersion } : {}),
+        identityVerified: currentStatus.identityVerified ?? false,
         ...previousSuccessDetails(currentStatus),
+        ...previousInferenceDetails(currentStatus),
       });
       currentStatus = await checkMedharyaAlphaHealth(options, options.request, currentStatus);
+      if (config) rememberAlphaStatus(config, currentStatus);
       return currentStatus;
     },
     getHealthStatus() {
       return currentStatus;
+    },
+    getStatus() {
+      const config = normalizeAlphaConfig(options);
+      return config
+        ? providerStatusForAlpha(currentStatus, config)
+        : {
+            provider: ALPHA_PROVIDER_ID,
+            state: "unavailable",
+            model: configuredValue(options.model) ?? undefined,
+            reason: PROVIDER_ERROR_REASONS.missingConfig,
+            identityVerified: false,
+          };
     },
   };
 }

@@ -16,7 +16,8 @@ ran.
 
 - Phase 1 responsive landing page and validated project brief.
 - Stable project workspace URLs such as `/workspace/<project-id>`.
-- Browser-local project persistence; no account, cloud sync, or database.
+- Browser-local early persistence plus an optional account-backed file repository;
+  no managed database or cloud sync is claimed.
 - Editable project brief with explicit save-and-regenerate behavior.
 - Context-aware chat with a clear deterministic fallback when no model provider
   is configured or a configured provider times out, is rate-limited, rejects its
@@ -29,6 +30,9 @@ ran.
   budget, experience, deployment, preferences, and requirements.
 - Optional OpenAI-compatible server-side provider adapter with bounded prompts,
   normalized output, usage metadata, transient retries, and secret-safe errors.
+- Dedicated Medharya Alpha FastAPI provider path with server-side authentication,
+  HTTPS enforcement, request IDs, health/status checks, concurrency limits, and
+  model/adapter identity attestation when the service returns it.
 - Optional Brave Search server-side research adapter with bounded public-page
   retrieval, redirect checks, content-type/size/time limits, and SSRF defenses.
 - Evidence records link search snippets or retrieved page text to source IDs;
@@ -141,6 +145,30 @@ npm run test:provider
 This starts a temporary local production server and never contacts a real AI
 provider or prints a credential.
 
+The Alpha path can be exercised against a local mocked FastAPI service with:
+
+```bash
+npm run test:alpha-adapter
+```
+
+That check covers provider selection, health identity attestation, request
+authentication and request IDs, input/output limits, malformed responses,
+timeouts, fallback behavior, server-owned persistence, and idempotency. It is
+mocked and is not evidence that a deployed Alpha service is reachable.
+
+After a real Alpha service is deployed and its server-only variables are set,
+run the opt-in live check against the running Medharya backend:
+
+```bash
+MEDHARYA_BASE_URL=https://your-medharya-host.example npm run test:alpha:live
+```
+
+The live check creates a temporary application account, calls the authenticated
+status route, sends one real project chat message through `/api/chat`, verifies
+the returned provider/model/adapter identity fields, and does not print prompt
+content, response content, or credentials. It fails rather than falling back if
+the running backend is not actually using `medharya-alpha`.
+
 The public-page retrieval guardrails (private-network blocking, redirect checks,
 body limits, and HTML extraction) have a deterministic mocked check:
 
@@ -162,7 +190,92 @@ account and does not print credentials.
 
 ## Optional provider configuration
 
-### Server-side model provider
+### Provider selection
+
+The browser never calls a model service directly. The existing Next.js route
+`POST /api/chat` loads the owned project context, selects one server-side
+provider, validates the result, persists the conversation, and returns the
+existing frontend response shape. This repository does not contain a separate
+Express entry point; the App Router handlers are the current Node.js backend.
+
+Set `MEDHARYA_AI_PROVIDER=alpha` to select Medharya Alpha. Leave it unset or
+use `openai-compatible` to preserve the existing provider path.
+
+### Medharya Alpha FastAPI provider
+
+The dedicated Alpha adapter targets a configurable service with these defaults:
+
+```dotenv
+MEDHARYA_AI_PROVIDER=alpha
+MEDHARYA_ALPHA_BASE_URL=https://your-private-alpha-host.example
+MEDHARYA_ALPHA_API_KEY=replace-me
+MEDHARYA_ALPHA_MODEL=medharya-alpha-v0.1
+MEDHARYA_ALPHA_BASE_MODEL=Qwen3-8B
+MEDHARYA_ALPHA_ADAPTER_VERSION=Medharya Alpha v0.1
+MEDHARYA_ALPHA_HEALTH_PATH=/health
+MEDHARYA_ALPHA_CHAT_PATH=/chat
+MEDHARYA_ALPHA_TIMEOUT_MS=15000
+MEDHARYA_ALPHA_MAX_CONCURRENT=4
+MEDHARYA_ALPHA_MAX_OUTPUT_TOKENS=900
+MEDHARYA_ALPHA_ALLOW_INSECURE_LOCAL=0
+```
+
+The adapter sends a server-side Bearer credential, `X-Request-ID`, and a
+bounded JSON request:
+
+```json
+{
+  "request_id": "server-generated-id",
+  "message": "the latest user message",
+  "system": "bounded system instructions",
+  "context": "bounded project and evidence context",
+  "history": [{"role": "user", "content": "bounded prior message"}],
+  "max_new_tokens": 900
+}
+```
+
+It accepts only a bounded text response from the top-level `response`, `reply`,
+or `content` field. Optional response metadata is read from `model`,
+`base_model`, and `adapter_version` (snake-case or camel-case variants).
+`GET /health` must expose a readiness signal such as `ready: true`,
+`model_loaded: true`, `status: "ready"`, or `ok: true`; returning matching model,
+base-model, and adapter metadata is required to mark identity as verified.
+
+These are the adapter's current contract assumptions, not a claim that the
+historical Colab service still implements them. No Alpha URL, credential,
+deployment, base-model load, adapter load, or live inference was discoverable in
+this workspace at the time of this integration. Verify the actual FastAPI
+schemas before enabling Alpha in production.
+
+Remote Alpha URLs must use HTTPS. HTTP is accepted only for `localhost` or
+`127.0.0.1` when `MEDHARYA_ALPHA_ALLOW_INSECURE_LOCAL=1`, and that exception is
+for local testing only. The configured base model and adapter remain separate
+configuration/artifact requirements; this integration never merges or modifies
+model weights.
+
+The authenticated status route is:
+
+```text
+GET /api/ai/status?projectId=<owned-project-id>
+```
+
+It performs a real Alpha health request when Alpha is configured. Its states are:
+
+- `configured`: configuration is valid but no live check has established readiness.
+- `connecting`: a health or inference check is currently in progress inside the backend.
+- `ready`: a health check or inference succeeded; `identityVerified` is separate and
+  is true only when the service attested to the configured identity fields.
+- `degraded`: configuration existed or a prior check succeeded, but the latest
+  check/inference failed, mismatched identity, or returned malformed data.
+- `unavailable`: missing/invalid configuration, rejected credentials, or no
+  reachable service has been established.
+
+Alpha inference is not automatically retried because the service contract does
+not yet document request-id idempotency for generation requests. Timeouts,
+authentication failures, overload, and malformed responses return safe provider
+status data and preserve the deterministic fallback.
+
+### Existing OpenAI-compatible provider
 
 Medharya supports an OpenAI-compatible chat-completions endpoint through:
 
@@ -222,6 +335,7 @@ server. No global packages or host credentials are required.
 src/
   app/
     api/chat/route.ts          server-side model boundary
+    api/ai/status/route.ts     authenticated provider health/status boundary
     api/plan/route.ts          validated deterministic plan boundary
     api/research/route.ts      server-side research boundary
     api/auth/                  prototype account/session and anonymous handoff
@@ -276,8 +390,8 @@ recommendation and conversation contracts.
 - Model citations are accepted only when their evidence IDs resolve to server-
   captured evidence; model-provided URLs are never promoted into citations.
 - Important brief changes require an explicit user save action.
-- No payments, authentication, deployment, unrestricted shell access, or
-  arbitrary model tool execution is implemented.
+- No payments, production identity provider, deployment automation, unrestricted
+  shell access, or arbitrary model tool execution is implemented.
 
 ## Known limitations
 
@@ -292,6 +406,10 @@ recommendation and conversation contracts.
   branch context, bounded recent message window, and captured evidence on the
   server; model output is not automatically allowed to mutate the project brief
   or invoke privileged actions.
+- Medharya Alpha v0.1 model weights, the Qwen3-8B base artifact, the QLoRA
+  adapter, and a persistent GPU inference deployment are not present in this
+  repository. The prior Google Colab result is historical evidence only; no
+  current Alpha endpoint was discoverable or live-verified here.
 - Brave search and public-page retrieval are live network operations when
   enabled. They are bounded and source-linked, but they do not prove that a
   source is truthful or current.
@@ -303,9 +421,18 @@ recommendation and conversation contracts.
 
 1. Pin Node.js with `.nvmrc` or use the included Dockerfile.
 2. Run `npm ci` from the committed lockfile.
-3. Configure provider keys only in the deployment secret manager if providers
-   are wanted.
-4. Run `npm run test` before deploying.
-5. Run `npm run build` and start with `npm start`, or deploy the Docker image.
-6. Keep the provider and research limits, data retention, and cost terms under
+3. For Alpha, deploy the Qwen3-8B base model and Medharya Alpha v0.1 QLoRA
+   adapter as separate artifacts on a persistent, authenticated GPU service.
+   The service must expose the `/health` and `/chat` contract documented above;
+   Colab or a temporary tunnel is not a production deployment.
+4. Configure provider keys and Alpha service variables only in the deployment
+   secret manager. Use `MEDHARYA_AI_PROVIDER=alpha` only after the service
+   health schema, model identity, adapter identity, and HTTPS/auth path are
+   verified.
+5. Run `npm run test` before deploying.
+6. Run `npm run build` and start with `npm start`, or deploy the Docker image.
+7. Run `MEDHARYA_BASE_URL=<backend> npm run test:alpha:live` only after the
+   configured Alpha service is reachable. This is the evidence required for a
+   genuine integration response; mocked tests do not substitute for it.
+8. Keep the provider and research limits, data retention, and cost terms under
    review before exposing the prototype to real user data.

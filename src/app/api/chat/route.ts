@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 import { generateDeterministicAssistantReply } from "@/lib/assistant";
 import { appendBranchMessage } from "@/lib/operating-system";
 import { getConfiguredModelProvider } from "@/lib/providers/openai-compatible";
-import type { ModelPrompt } from "@/lib/providers/types";
+import { selectedModelProviderStatus } from "@/lib/providers/openai-compatible";
+import type { ModelPrompt, ModelProviderResult, ModelProviderStatus } from "@/lib/providers/types";
 import { citationsForEvidence } from "@/lib/research/evidence";
 import {
   getCurrentUser,
@@ -16,6 +17,7 @@ import type { ResearchCitation } from "@/types/research";
 import type { ProjectWorkspace, WorkspaceMessage, WorkspaceMessageCitation } from "@/types/workspace";
 
 const MAX_MESSAGE_LENGTH = 4_000;
+const MAX_REQUEST_BYTES = 400_000;
 const MAX_PROJECT_ID_LENGTH = 200;
 const MAX_BRANCH_ID_LENGTH = 200;
 
@@ -139,6 +141,32 @@ interface GeneratedReply {
   notice?: string;
   providerReason?: string;
   citations?: WorkspaceMessageCitation[];
+  providerStatus?: ModelProviderStatus;
+}
+
+function providerStatusForResult(result: ModelProviderResult): ModelProviderStatus {
+  if (result.providerStatus) return result.providerStatus;
+  const configured = selectedModelProviderStatus();
+  if (result.status === "available") {
+    return {
+      provider: result.provider ?? configured.provider,
+      state: "ready",
+      ...(result.model ? { model: result.model } : {}),
+      ...(result.baseModel ? { baseModel: result.baseModel } : {}),
+      ...(result.adapterVersion ? { adapterVersion: result.adapterVersion } : {}),
+      checkedAt: new Date().toISOString(),
+      lastSuccessfulInferenceAt: new Date().toISOString(),
+      identityVerified: result.identityVerified ?? false,
+    };
+  }
+  return {
+    ...configured,
+    provider: result.provider ?? configured.provider,
+    model: result.model ?? configured.model,
+    state: configured.state === "unavailable" ? "unavailable" : "degraded",
+    reason: result.reason,
+    checkedAt: new Date().toISOString(),
+  };
 }
 
 async function generateReply(workspace: ProjectWorkspace, message: string, branchId?: string): Promise<GeneratedReply> {
@@ -147,6 +175,7 @@ async function generateReply(workspace: ProjectWorkspace, message: string, branc
     return {
       ...generateDeterministicAssistantReply(workspace, message),
       notice: "No server-side model provider is configured; this is a deterministic catalogue fallback.",
+      providerStatus: selectedModelProviderStatus(),
     };
   }
 
@@ -167,6 +196,11 @@ async function generateReply(workspace: ProjectWorkspace, message: string, branc
         model: result.model,
         notice: "The configured model returned an unknown evidence citation, so Medharya used its deterministic catalogue fallback.",
         providerReason: "invalid-response",
+        providerStatus: {
+          ...providerStatusForResult(result),
+          state: "degraded",
+          reason: "invalid-response",
+        },
       };
     }
     const citations = workspaceCitations(citationsForEvidence(citationIds, workspace.researchEvidence ?? [], workspace.researchSources ?? []));
@@ -177,6 +211,11 @@ async function generateReply(workspace: ProjectWorkspace, message: string, branc
         model: result.model,
         notice: "The configured model returned an evidence citation that could not be resolved, so Medharya used its deterministic catalogue fallback.",
         providerReason: "invalid-response",
+        providerStatus: {
+          ...providerStatusForResult(result),
+          state: "degraded",
+          reason: "invalid-response",
+        },
       };
     }
     return {
@@ -185,6 +224,7 @@ async function generateReply(workspace: ProjectWorkspace, message: string, branc
       provider: result.provider,
       model: result.model,
       usage: result.usage,
+      providerStatus: providerStatusForResult(result),
       ...(citations.length ? { citations } : {}),
       ...(citationIds.length && !citations.length ? { notice: "The model returned no valid project evidence IDs, so no citations were attached." } : {}),
     };
@@ -194,6 +234,7 @@ async function generateReply(workspace: ProjectWorkspace, message: string, branc
     ...generateDeterministicAssistantReply(workspace, message),
     notice: "The configured model provider was unavailable, so Medharya used its deterministic catalogue fallback.",
     providerReason: result.reason,
+    providerStatus: providerStatusForResult(result),
   };
 }
 
@@ -257,6 +298,10 @@ async function chatForOwnedProject(
 
 export async function POST(request: Request) {
   try {
+    const contentLength = Number(request.headers.get("content-length") ?? "0");
+    if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) {
+      return NextResponse.json({ error: "The chat request is too large." }, { status: 413 });
+    }
     const body: unknown = await request.json();
     if (!isRecord(body) || typeof body.message !== "string") {
       return NextResponse.json({ error: "A valid message is required." }, { status: 400 });

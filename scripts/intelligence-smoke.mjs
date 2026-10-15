@@ -57,6 +57,11 @@ if (signup.response.status !== 201 || typeof signup.payload?.project?.id !== "st
 }
 const projectId = signup.payload.project.id;
 
+const aiStatus = await request(`/api/ai/status?projectId=${encodeURIComponent(projectId)}`);
+if (aiStatus.response.status !== 200 || aiStatus.payload?.providerStatus?.state !== "unavailable") {
+  throw new Error("Unavailable-provider status check failed.");
+}
+
 const chat = await request("/api/chat", {
   method: "POST",
   body: JSON.stringify({ projectId, message: "What should be checked before committing to this direction?", messageId: "intelligence-smoke-message" }),

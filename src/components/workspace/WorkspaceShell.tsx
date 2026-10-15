@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import { Brand } from "@/components/layout/Brand";
 import type { ResearchResponse } from "@/types/research";
+import type { ModelProviderStatus } from "@/lib/providers/types";
 import type { WorkspaceMessage, ProjectWorkspace, WorkspaceRequestPatch } from "@/types/workspace";
 import { appendResearchBundle, appendWorkspaceMessage, applyWorkspaceRequestPatch, createStableId } from "@/lib/workspace";
 import { ensureOperatingSystem } from "@/lib/operating-system";
@@ -57,6 +58,7 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const [chatNotice, setChatNotice] = useState<string | null>(null);
   const [serverBacked, setServerBacked] = useState(false);
+  const [providerStatus, setProviderStatus] = useState<{ projectId: string; status: ModelProviderStatus } | null>(null);
   const [researchState, setResearchState] = useState<"idle" | "working" | "unavailable" | "error">("idle");
   const [researchMessage, setResearchMessage] = useState<string | null>(null);
 
@@ -92,6 +94,23 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
     return () => window.cancelAnimationFrame(frame);
   }, [projectId]);
 
+  useEffect(() => {
+    if (!serverBacked) {
+      return;
+    }
+    let active = true;
+    void fetch(`/api/ai/status?projectId=${encodeURIComponent(projectId)}`)
+      .then(async (response) => {
+        const payload = await readResponse(response);
+        if (!active || !response.ok || typeof payload.providerStatus !== "object" || payload.providerStatus === null) return;
+        setProviderStatus({ projectId, status: payload.providerStatus as ModelProviderStatus });
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [projectId, serverBacked]);
+
   function persist(nextWorkspace: ProjectWorkspace) {
     const normalizedWorkspace = ensureOperatingSystem(nextWorkspace);
     setWorkspace(normalizedWorkspace);
@@ -117,6 +136,12 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
     setIsSending(true);
     setChatError(null);
     setChatNotice(null);
+    if (serverBacked && providerStatus?.projectId === projectId && providerStatus.status.provider === "medharya-alpha") {
+      setProviderStatus({
+        projectId,
+        status: { ...providerStatus.status, state: "connecting", reason: undefined },
+      });
+    }
 
     const userMessage = makeMessage("user", content, "user");
     const workspaceWithUserMessage = appendWorkspaceMessage(workspace, userMessage);
@@ -134,6 +159,9 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
       if (!response.ok || typeof payload.content !== "string") {
         throw new Error(typeof payload.error === "string" ? payload.error : "The chat service returned an invalid response.");
       }
+      if (typeof payload.providerStatus === "object" && payload.providerStatus !== null) {
+        setProviderStatus({ projectId, status: payload.providerStatus as ModelProviderStatus });
+      }
 
       if (serverBacked && payload.workspace && typeof payload.workspace === "object") {
         persist(ensureOperatingSystem(payload.workspace as ProjectWorkspace));
@@ -147,6 +175,9 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
     } catch (error) {
       const fallback = generateDeterministicAssistantReply(workspaceWithUserMessage, content);
       persist(appendWorkspaceMessage(workspaceWithUserMessage, makeMessage("assistant", `${fallback.content}\n\nSource note: The server chat route was unavailable, so this response was generated locally from the deterministic catalogue fallback.`, "deterministic-fallback")));
+      if (serverBacked && providerStatus?.projectId === projectId && providerStatus.status.provider === "medharya-alpha") {
+        setProviderStatus({ projectId, status: { ...providerStatus.status, state: "degraded", reason: "transient-error" } });
+      }
       setChatError(error instanceof Error ? `${error.message} Local fallback used.` : "The server chat route was unavailable. Local fallback used.");
       setRetryState({ workspace: workspaceWithUserMessage, content, messageId: userMessage.id, serverBacked });
     } finally {
@@ -169,6 +200,9 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
       const payload = await readResponse(response);
       if (!response.ok || typeof payload.content !== "string") {
         throw new Error(typeof payload.error === "string" ? payload.error : "The chat service returned an invalid response.");
+      }
+      if (typeof payload.providerStatus === "object" && payload.providerStatus !== null) {
+        setProviderStatus({ projectId, status: payload.providerStatus as ModelProviderStatus });
       }
       if (retryState.serverBacked && payload.workspace && typeof payload.workspace === "object") {
         persist(ensureOperatingSystem(payload.workspace as ProjectWorkspace));
@@ -295,7 +329,7 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
 
         <div className="workspace-grid">
           <div className="workspace-primary-column">
-            <WorkspaceChat messages={workspace.messages} isSending={isSending} error={chatError} notice={chatNotice} onSend={sendMessage} onRetry={retryState ? retryServerResponse : undefined} />
+            <WorkspaceChat messages={workspace.messages} isSending={isSending} error={chatError} notice={chatNotice} providerStatus={serverBacked && providerStatus?.projectId === projectId ? providerStatus.status : null} onSend={sendMessage} onRetry={retryState ? retryServerResponse : undefined} />
             <section className="workspace-memory-panel" aria-labelledby="memory-title">
               <div className="workspace-panel-heading"><div><p className="eyebrow">Structured memory</p><h2 id="memory-title">What this project currently knows.</h2></div><span className="memory-version">Plan v{workspace.memory.currentPlanVersion}</span></div>
               <div className="memory-grid">

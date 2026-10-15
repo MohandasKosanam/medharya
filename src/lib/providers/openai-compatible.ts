@@ -3,10 +3,15 @@ import {
   type ModelPrompt,
   type ModelProvider,
   type ModelProviderResult,
+  type ModelProviderStatus,
   type ModelProviderUsage,
   type ProviderErrorReason,
 } from "./types";
-import { getConfiguredMedharyaAlphaProvider } from "./alpha";
+import {
+  getConfiguredMedharyaAlphaProvider,
+  getMedharyaAlphaHealthStatus,
+  toMedharyaAlphaProviderStatus,
+} from "./alpha";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -334,7 +339,7 @@ export function selectModelProvider(
   if (env.MEDHARYA_DISABLE_EXTERNAL_PROVIDERS === "1") return null;
 
   const requestedProvider = env.MEDHARYA_AI_PROVIDER?.trim().toLowerCase();
-  if (requestedProvider === "alpha") {
+  if (requestedProvider === "alpha" || requestedProvider === "medharya-alpha") {
     return getConfiguredMedharyaAlphaProvider({ env, request });
   }
   if (requestedProvider === "disabled" || requestedProvider === "none" || requestedProvider === "off") return null;
@@ -355,6 +360,52 @@ export function selectModelProvider(
 }
 
 export const selectConfiguredModelProvider = selectModelProvider;
+
+export function selectedModelProviderStatus(
+  options: GetConfiguredModelProviderOptions | ModelProviderRequest = {},
+): ModelProviderStatus {
+  const env = typeof options === "function" ? process.env : options.env ?? process.env;
+  if (env.MEDHARYA_DISABLE_EXTERNAL_PROVIDERS === "1") {
+    return {
+      provider: "none",
+      state: "unavailable",
+      reason: PROVIDER_ERROR_REASONS.missingConfig,
+      identityVerified: false,
+    };
+  }
+
+  const requestedProvider = env.MEDHARYA_AI_PROVIDER?.trim().toLowerCase();
+  if (requestedProvider === "alpha" || requestedProvider === "medharya-alpha") {
+    return toMedharyaAlphaProviderStatus(getMedharyaAlphaHealthStatus({ env }), { env });
+  }
+  if (requestedProvider === "disabled" || requestedProvider === "none" || requestedProvider === "off") {
+    return {
+      provider: "none",
+      state: "unavailable",
+      reason: PROVIDER_ERROR_REASONS.missingConfig,
+      identityVerified: false,
+    };
+  }
+
+  const apiKey = configuredValue(env.MEDHARYA_AI_API_KEY);
+  const model = configuredValue(env.MEDHARYA_AI_MODEL);
+  const baseUrl = configuredValue(env.MEDHARYA_AI_BASE_URL) ?? DEFAULT_BASE_URL;
+  if (!apiKey || !model || !isValidBaseUrl(baseUrl)) {
+    return {
+      provider: "openai-compatible",
+      state: "unavailable",
+      ...(model ? { model } : {}),
+      reason: PROVIDER_ERROR_REASONS.missingConfig,
+      identityVerified: false,
+    };
+  }
+  return {
+    provider: "openai-compatible",
+    model,
+    state: "configured",
+    identityVerified: false,
+  };
+}
 
 export function modelProviderConfigurationStatus(
   options?: GetConfiguredModelProviderOptions | ModelProviderRequest,
