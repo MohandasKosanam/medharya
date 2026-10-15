@@ -26,26 +26,26 @@ const valuePropositions = [
   {
     icon: "01",
     title: "A stack with context",
-    copy: "Recommendations should explain why a tool fits—not just name a popular framework. This decision layer is being built for Phase 2.",
-    status: "In development",
+    copy: "Recommendations now start from a curated catalogue and expose reasoning, alternatives, uncertainty, and open questions for review.",
+    status: "Catalogue baseline",
   },
   {
     icon: "02",
     title: "Budget-aware choices",
     copy: "Keep the user’s budget and cost drivers visible from the start, without pretending to have live pricing in this prototype.",
-    status: "Foundation ready",
+    status: "Reviewable",
   },
   {
     icon: "03",
     title: "Compatibility awareness",
-    copy: "Surface the practical connections and limitations between tools before they become expensive detours.",
-    status: "In development",
+    copy: "Surface known catalogue conflicts and flag runtime compatibility as an area that still needs verification.",
+    status: "Rules active",
   },
   {
     icon: "04",
     title: "Guidance you can use",
-    copy: "Turn decisions into an implementation sequence that helps a student, freelancer, or small team make progress.",
-    status: "In development",
+    copy: "Turn approved direction into progressive discovery questions, branch context, task drafts, and a roadmap you can inspect.",
+    status: "Workspace active",
   },
 ];
 
@@ -115,7 +115,7 @@ export default function Home() {
                 </div>
                 <div className="preview-footer">
                   <span className="preview-status"><i aria-hidden="true" />Structured input</span>
-                  <span>Phase 1</span>
+                  <span>Phase 2</span>
                 </div>
               </div>
               <div className="floating-label label-context"><span aria-hidden="true">⌁</span> Context first</div>

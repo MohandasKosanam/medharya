@@ -1,5 +1,6 @@
 import type { ProjectWorkspace } from "@/types/workspace";
 import type { SolutionPlan } from "@/types/solution";
+import type { WorkspaceMessage } from "@/types/workspace";
 
 /** The source of a record is intentionally explicit so generated suggestions are reviewable. */
 export type OperatingSystemProvenance =
@@ -13,11 +14,16 @@ export type OperatingSystemProvenance =
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
 export const BRANCH_TEMPLATES = [
-  "discovery",
-  "foundation",
-  "build",
-  "validation",
-  "delivery",
+  "product-strategy",
+  "market-research",
+  "development-architecture",
+  "ui-ux-design",
+  "marketing-growth",
+  "finance-budget",
+  "operations",
+  "legal-compliance",
+  "customer-support",
+  "automation",
 ] as const;
 
 export type BranchTemplate = (typeof BRANCH_TEMPLATES)[number];
@@ -33,29 +39,54 @@ export interface BranchTemplateDefinition {
 
 export const DEFAULT_BRANCH_TEMPLATES: readonly BranchTemplateDefinition[] = [
   {
-    template: "discovery",
-    name: "Discovery",
-    description: "Clarify the user, problem, scope, and decisions that need evidence.",
+    template: "product-strategy",
+    name: "Product Strategy",
+    description: "Clarify the user, problem, scope, and product decisions that need evidence.",
   },
   {
-    template: "foundation",
-    name: "Foundation",
-    description: "Capture architecture, tooling, data, and other technical foundations.",
+    template: "market-research",
+    name: "Market Research",
+    description: "Investigate users, alternatives, competitors, and evidence for the opportunity.",
   },
   {
-    template: "build",
-    name: "Build",
-    description: "Turn the agreed direction into a thin, usable product slice.",
+    template: "development-architecture",
+    name: "Development & Architecture",
+    description: "Capture architecture, tooling, data, integrations, and technical foundations.",
   },
   {
-    template: "validation",
-    name: "Validation",
-    description: "Define tests, success signals, risks, and feedback loops.",
+    template: "ui-ux-design",
+    name: "UI/UX Design",
+    description: "Shape the user experience, interface states, accessibility, and design decisions.",
   },
   {
-    template: "delivery",
-    name: "Delivery",
-    description: "Prepare release, deployment, operations, and handover work.",
+    template: "marketing-growth",
+    name: "Marketing & Growth",
+    description: "Define positioning, acquisition experiments, messaging, and growth signals.",
+  },
+  {
+    template: "finance-budget",
+    name: "Finance & Budget",
+    description: "Track budget constraints, cost drivers, pricing assumptions, and financial risks.",
+  },
+  {
+    template: "operations",
+    name: "Operations",
+    description: "Prepare delivery, monitoring, support operations, and handover work.",
+  },
+  {
+    template: "legal-compliance",
+    name: "Legal & Compliance",
+    description: "Record privacy, security, legal, policy, and compliance questions.",
+  },
+  {
+    template: "customer-support",
+    name: "Customer Support",
+    description: "Define support channels, feedback handling, and service recovery workflows.",
+  },
+  {
+    template: "automation",
+    name: "Automation",
+    description: "Design safe, approval-aware workflows without implying a live scheduler.",
   },
 ] as const;
 
@@ -68,6 +99,12 @@ export interface ProjectBranch {
   status: BranchStatus;
   provenance: OperatingSystemProvenance;
   approvalStatus: ApprovalStatus;
+  parentBranchId?: string;
+  messages: WorkspaceMessage[];
+  requirements: string[];
+  researchFindingIds: string[];
+  decisionIds: string[];
+  taskIds: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -219,6 +256,20 @@ export interface UserPreferences {
   discoveryCadence: "minimal" | "progressive" | "thorough";
   provenance: OperatingSystemProvenance;
   approvalStatus: ApprovalStatus;
+}
+
+export interface ProjectOperatingSystem {
+  branches: ProjectBranch[];
+  edges: BranchEdge[];
+  tasks: Task[];
+  milestones: Milestone[];
+  automations: AutomationDefinition[];
+  automationRuns: AutomationRun[];
+  discoveryQuestions: DiscoveryQuestion[];
+  discoveryAnswers: DiscoveryAnswer[];
+  decisions: DecisionRecord[];
+  branchImpactSuggestions: BranchImpactSuggestion[];
+  preferences: UserPreferences;
 }
 
 export interface BranchDraft {

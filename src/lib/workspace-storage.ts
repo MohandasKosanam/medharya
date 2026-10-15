@@ -1,4 +1,5 @@
 import type { ProjectWorkspace } from "@/types/workspace";
+import { ensureOperatingSystem } from "@/lib/operating-system";
 
 export const PROJECT_WORKSPACES_STORAGE_KEY = "medharya:workspaces:v1";
 
@@ -35,7 +36,9 @@ function readWorkspaceMap(): Record<string, ProjectWorkspace> {
     if (!isRecord(parsed)) return {};
 
     return Object.fromEntries(
-      Object.entries(parsed).filter(([, workspace]) => isProjectWorkspace(workspace)),
+      Object.entries(parsed)
+        .filter(([, workspace]) => isProjectWorkspace(workspace))
+        .map(([id, workspace]) => [id, ensureOperatingSystem(workspace as ProjectWorkspace)]),
     ) as Record<string, ProjectWorkspace>;
   } catch {
     return {};

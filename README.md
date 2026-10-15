@@ -27,6 +27,11 @@ supports optional server-side model and web-research providers.
 - Optional OpenAI-compatible server-side provider adapter.
 - Optional Brave Search server-side research adapter.
 - Explicit provenance, source, uncertainty, and unavailable-provider states.
+- Optional server-side anonymous-draft handoff, account signup/login, logout,
+  expiring httpOnly sessions, and ownership-checked project routes.
+- Structured project operating-system records for discovery questions, branches,
+  branch conversations, task drafts, milestones, and manual-only automation
+  dry runs.
 
 This prototype does **not** claim live recommendations, current prices,
 verified compatibility, deployment, or web research unless the corresponding
@@ -53,6 +58,11 @@ Copy-Item .env.example .env.local
 
 The environment file may remain blank for the deterministic local-first mode.
 Never commit real credentials.
+
+For the account-backed prototype, set `MEDHARYA_SERVER_DATA_FILE` to a writable
+server path when the default `./data/medharya-server.json` is not appropriate.
+The repository is intentionally single-instance file-backed storage; it is not a
+production database or multi-instance session store.
 
 ## Run in development
 
@@ -103,6 +113,18 @@ MEDHARYA_BASE_URL=http://localhost:3002 node scripts/phase2-smoke.mjs
 The smoke check verifies the landing page, chat input validation, and the
 workspace route, recommendation differentiation, and the explicit live-research
 available/unavailable response. It does not require an external provider.
+
+For a running production server, the next-phase ownership and operating-system
+smoke check is:
+
+```bash
+MEDHARYA_BASE_URL=http://localhost:3000 node scripts/next-phase-smoke.mjs
+```
+
+It exercises anonymous draft capture, signup attachment, session lookup,
+ownership-checked project reads and updates, operating-system persistence,
+logout protection, and cross-user isolation. It uses a temporary generated
+account and does not print credentials.
 
 ## Optional provider configuration
 
@@ -160,6 +182,8 @@ src/
     api/chat/route.ts          server-side model boundary
     api/plan/route.ts          validated deterministic plan boundary
     api/research/route.ts      server-side research boundary
+    api/auth/                  prototype account/session and anonymous handoff
+    api/projects/[projectId]/  ownership-checked project operations
     workspace/[projectId]/     dedicated project workspace route
   catalog/
     data.ts                    curated tool records
@@ -167,7 +191,7 @@ src/
     types.ts                   catalogue contracts
   components/
     builder/                   Phase 1 brief and workspace creation
-    workspace/                 chat, brief editor, plan, and research UI
+    workspace/                 chat, brief editor, plan, research, branches, tasks
     layout/                    shared brand, header, footer
   lib/
     assistant.ts               deterministic chat fallback
@@ -176,6 +200,7 @@ src/
     workspace-storage.ts       defensive browser persistence
     providers/                 server-side model adapter
     research/                  server-side Brave adapter
+    server/repository.ts       file-backed auth/project repository boundary
   types/
     project.ts                 Phase 1 request contract
     workspace.ts               project and conversation memory
@@ -191,6 +216,9 @@ recommendation and conversation contracts.
 ## Data and security boundaries
 
 - Browser local storage is not secure multi-user storage and is not cloud sync.
+- Account-backed prototype records use a server-side JSON repository and opaque
+  hashed httpOnly session tokens; this is not production-grade
+  database infrastructure.
 - Model and search keys are server-only environment variables.
 - Incoming chat and research messages are length-limited and validated.
 - Retrieved web content is treated as untrusted text; it cannot invoke tools or
@@ -201,7 +229,9 @@ recommendation and conversation contracts.
 
 ## Known limitations
 
-- No database, account system, multi-user sharing, or cross-device sync.
+- No managed database, account provider, multi-instance deployment, or production
+  scheduler. The account flow is a single-instance file-backed prototype with
+  ownership checks.
 - Catalogue links are curated but not live-verified in the repository.
 - Pricing and free-tier metadata are deliberately not asserted as current.
 - The deterministic fallback is useful for structured planning but is not an AI
@@ -209,6 +239,9 @@ recommendation and conversation contracts.
 - A configured model provider receives the structured brief and recent message
   window on the server; model output is not automatically allowed to mutate the
   project brief or invoke privileged actions.
+- Scheduled automations are not enabled. Automation Studio currently records
+  safe manual dry runs only; no background worker or recurring scheduler is
+  claimed.
 
 ## Deployment
 

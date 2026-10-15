@@ -1,6 +1,7 @@
 import type { ProjectRequest } from "@/types/project";
 import type { ResearchFinding } from "@/types/research";
 import type { SolutionPlan } from "@/types/solution";
+import type { ProjectOperatingSystem } from "@/types/operating-system";
 
 export type WorkspaceMessageRole = "user" | "assistant";
 
@@ -43,6 +44,8 @@ export interface ProjectWorkspace {
   memory: ProjectMemory;
   researchFindings: ResearchFinding[];
   plan: SolutionPlan;
+  /** Optional for backwards compatibility with Phase 2 browser records. */
+  operatingSystem?: ProjectOperatingSystem;
   createdAt: string;
   updatedAt: string;
 }

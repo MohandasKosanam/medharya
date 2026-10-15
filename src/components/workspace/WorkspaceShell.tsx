@@ -7,12 +7,15 @@ import { Brand } from "@/components/layout/Brand";
 import type { ResearchResponse } from "@/types/research";
 import type { WorkspaceMessage, ProjectWorkspace, WorkspaceRequestPatch } from "@/types/workspace";
 import { appendResearchFindings, appendWorkspaceMessage, applyWorkspaceRequestPatch, createStableId } from "@/lib/workspace";
+import { ensureOperatingSystem } from "@/lib/operating-system";
 import { generateDeterministicAssistantReply } from "@/lib/assistant";
 import { loadProjectWorkspace, saveProjectWorkspace } from "@/lib/workspace-storage";
 
 import { WorkspaceBriefEditor } from "./WorkspaceBriefEditor";
 import { WorkspaceChat } from "./WorkspaceChat";
 import { WorkspacePlanPanel } from "./WorkspacePlanPanel";
+import { WorkspaceOperatingSystem } from "./WorkspaceOperatingSystem";
+import { WorkspaceAccountStatus } from "./WorkspaceAccountStatus";
 
 type WorkspaceShellProps = {
   projectId: string;
@@ -57,25 +60,52 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      const savedWorkspace = loadProjectWorkspace(projectId);
-      if (savedWorkspace) {
-        setWorkspace(savedWorkspace);
-        setLoadState("ready");
-      } else {
+      void (async () => {
+        const savedWorkspace = loadProjectWorkspace(projectId);
+        if (savedWorkspace) {
+          setWorkspace(ensureOperatingSystem(savedWorkspace));
+          setLoadState("ready");
+          return;
+        }
+
+        try {
+          const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}`);
+          const payload: unknown = await response.json();
+          if (response.ok && typeof payload === "object" && payload !== null && "project" in payload && payload.project) {
+            const serverWorkspace = ensureOperatingSystem(payload.project as ProjectWorkspace);
+            saveProjectWorkspace(serverWorkspace);
+            setWorkspace(serverWorkspace);
+            setLoadState("ready");
+            return;
+          }
+        } catch {
+          // The local-first fallback below remains the honest state when the server is unavailable.
+        }
         setLoadState("missing");
-      }
+      })();
     });
 
     return () => window.cancelAnimationFrame(frame);
   }, [projectId]);
 
   function persist(nextWorkspace: ProjectWorkspace) {
-    setWorkspace(nextWorkspace);
-    if (!saveProjectWorkspace(nextWorkspace)) {
+    const normalizedWorkspace = ensureOperatingSystem(nextWorkspace);
+    setWorkspace(normalizedWorkspace);
+    if (!saveProjectWorkspace(normalizedWorkspace)) {
       setPersistenceError("The workspace is visible, but this browser could not persist the latest change.");
     } else {
       setPersistenceError(null);
     }
+  }
+
+  function persistOperatingSystem(nextWorkspace: ProjectWorkspace) {
+    const normalizedWorkspace = ensureOperatingSystem(nextWorkspace);
+    persist(normalizedWorkspace);
+    void fetch(`/api/projects/${encodeURIComponent(projectId)}/operating-system`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operatingSystem: normalizedWorkspace.operatingSystem }),
+    }).catch(() => undefined);
   }
 
   async function sendMessage(content: string) {
@@ -145,7 +175,13 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
       `The brief was updated with your approval and the baseline plan was regenerated as version ${updatedWorkspace.plan.version}. Review the stack, trade-offs, and open questions before treating it as a decision.`,
       "deterministic-fallback",
     );
-    persist(appendWorkspaceMessage(updatedWorkspace, changeMessage));
+    const nextWorkspace = appendWorkspaceMessage(updatedWorkspace, changeMessage);
+    persist(nextWorkspace);
+    void fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patch }),
+    }).catch(() => undefined);
     setResearchMessage(null);
   }
 
@@ -209,6 +245,7 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
         <div className="page-width workspace-header-inner">
           <Brand href="/" />
           <div className="workspace-header-project"><span>Project workspace</span><strong>{workspace.name}</strong></div>
+          <WorkspaceAccountStatus />
           <Link className="workspace-back-link" href="/">Back to Medharya <span aria-hidden="true">↗</span></Link>
         </div>
       </header>
@@ -239,6 +276,7 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
                 <div><h3>Recent summary</h3><p>{workspace.memory.recentSummary}</p></div>
               </div>
             </section>
+            <WorkspaceOperatingSystem workspace={workspace} onChange={persistOperatingSystem} />
           </div>
           <WorkspacePlanPanel workspace={workspace} researchState={researchState} researchMessage={researchMessage} onResearch={researchDirection} />
         </div>

@@ -1,5 +1,6 @@
 import type { ProjectWorkspace } from "@/types/workspace";
 import type { SolutionPlan } from "@/types/solution";
+import type { WorkspaceMessage } from "@/types/workspace";
 import {
   DEFAULT_BRANCH_TEMPLATES,
   type ApprovalStatus,
@@ -20,6 +21,8 @@ import {
   type TaskStatus,
   type TaskStatusUpdateResult,
   type OperatingSystemProvenance,
+  type ProjectOperatingSystem,
+  type UserPreferences,
 } from "@/types/operating-system";
 
 const DEFAULT_TIMESTAMP = "1970-01-01T00:00:00.000Z";
@@ -52,6 +55,16 @@ function templateDefinition(template: BranchTemplate) {
   return DEFAULT_BRANCH_TEMPLATES.find((item) => item.template === template) ?? DEFAULT_BRANCH_TEMPLATES[0];
 }
 
+function branchWelcome(branchName: string, description: string): WorkspaceMessage {
+  return {
+    id: stableId("branch-message", branchName),
+    role: "assistant",
+    content: `This is the ${branchName} branch. ${description}\n\nAsk a question here and the branch context will stay separate from the main project conversation.`,
+    createdAt: DEFAULT_TIMESTAMP,
+    source: "deterministic-fallback",
+  };
+}
+
 export function createDefaultBranches(workspace: ProjectWorkspace): ProjectBranch[] {
   const timestamp = workspace.updatedAt || workspace.createdAt || DEFAULT_TIMESTAMP;
   return DEFAULT_BRANCH_TEMPLATES.map((definition) => ({
@@ -63,13 +76,18 @@ export function createDefaultBranches(workspace: ProjectWorkspace): ProjectBranc
     status: "active",
     provenance: "deterministic",
     approvalStatus: "pending",
+    messages: [branchWelcome(definition.name, definition.description)],
+    requirements: [],
+    researchFindingIds: [],
+    decisionIds: [],
+    taskIds: [],
     createdAt: timestamp,
     updatedAt: timestamp,
   }));
 }
 
 export function createBranch(branches: ProjectBranch[], draft: BranchDraft): ProjectBranch {
-  const template = draft.template ?? "build";
+  const template = draft.template ?? "development-architecture";
   const definition = templateDefinition(template);
   const workspaceId = draft.workspaceId ?? branches[0]?.workspaceId ?? "workspace";
   const baseId = draft.id ?? stableId(`${workspaceId}-branch`, draft.name);
@@ -85,6 +103,11 @@ export function createBranch(branches: ProjectBranch[], draft: BranchDraft): Pro
     status: draft.status ?? "active",
     provenance: draft.provenance ?? "user",
     approvalStatus: draft.approvalStatus ?? "pending",
+    messages: [],
+    requirements: [],
+    researchFindingIds: [],
+    decisionIds: [],
+    taskIds: [],
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -92,6 +115,94 @@ export function createBranch(branches: ProjectBranch[], draft: BranchDraft): Pro
 
 export function addBranch(branches: ProjectBranch[], draft: BranchDraft): ProjectBranch[] {
   return [...branches, createBranch(branches, draft)];
+}
+
+export function initializeOperatingSystem(workspace: ProjectWorkspace): ProjectOperatingSystem {
+  const branches = createDefaultBranches(workspace);
+  const buildBranch = branches.find((branch) => branch.template === "development-architecture") ?? branches[0];
+  const tasks = createTaskDrafts(workspace.plan, {
+    branchId: buildBranch?.id,
+    approvalStatus: "pending",
+    timestamp: workspace.createdAt || DEFAULT_TIMESTAMP,
+  });
+  const tasksWithBranch = tasks.map((task) => ({
+    ...task,
+    branchId: buildBranch?.id ?? task.branchId,
+  }));
+  const finalBranches = branches.map((branch) =>
+    branch.id === buildBranch?.id
+      ? { ...branch, taskIds: tasksWithBranch.map((task) => task.id) }
+      : branch,
+  );
+  const preferences: UserPreferences = {
+    id: `preferences-${workspace.id}`,
+    status: "active",
+    defaultBranchTemplate: "product-strategy",
+    preferredAutomationIds: [],
+    discoveryCadence: "progressive",
+    provenance: "system",
+    approvalStatus: "approved",
+  };
+
+  return {
+    branches: finalBranches,
+    edges: [],
+    tasks: tasksWithBranch,
+    milestones: [],
+    automations: getSafeAutomationTemplates(),
+    automationRuns: [],
+    discoveryQuestions: createProgressiveDiscoveryQuestions(workspace),
+    discoveryAnswers: [],
+    decisions: [],
+    branchImpactSuggestions: [],
+    preferences,
+  };
+}
+
+export function ensureOperatingSystem(workspace: ProjectWorkspace): ProjectWorkspace {
+  const existing = workspace.operatingSystem;
+  if (existing && Array.isArray(existing.branchImpactSuggestions) && existing.branches.every((branch) => Array.isArray(branch.messages))) {
+    return workspace;
+  }
+
+  const baseline = initializeOperatingSystem(workspace);
+  return {
+    ...workspace,
+    operatingSystem: {
+      ...baseline,
+      ...existing,
+      branchImpactSuggestions: existing?.branchImpactSuggestions ?? [],
+      branches: existing?.branches?.map((branch) => ({
+        ...baseline.branches.find((candidate) => candidate.id === branch.id),
+        ...branch,
+        messages: branch.messages ?? [],
+        requirements: branch.requirements ?? [],
+        researchFindingIds: branch.researchFindingIds ?? [],
+        decisionIds: branch.decisionIds ?? [],
+        taskIds: branch.taskIds ?? [],
+      })) ?? baseline.branches,
+    },
+  };
+}
+
+export function appendBranchMessage(
+  workspace: ProjectWorkspace,
+  branchId: string,
+  nextMessage: WorkspaceMessage,
+): ProjectWorkspace {
+  const operatingSystem = workspace.operatingSystem ?? initializeOperatingSystem(workspace);
+  return {
+    ...workspace,
+    operatingSystem: {
+      ...operatingSystem,
+      branches: operatingSystem.branches.map((branch) =>
+        branch.id === branchId
+          ? { ...branch, messages: [...branch.messages, nextMessage].slice(-60), updatedAt: nextMessage.createdAt }
+          : branch,
+      ),
+    },
+    updatedAt: nextMessage.createdAt,
+  };
 }
 
 export function renameBranch(branches: ProjectBranch[], branchId: string, name: string): ProjectBranch[] {
@@ -220,25 +331,45 @@ export function updateTaskStatus(
 }
 
 const IMPACT_RULES: Record<BranchTemplate, { terms: string[]; action: string }> = {
-  discovery: {
+  "product-strategy": {
     terms: ["user", "audience", "problem", "scope", "requirement", "goal", "journey"],
     action: "Re-check the user outcome, scope, and open discovery questions.",
   },
-  foundation: {
+  "market-research": {
+    terms: ["market", "competitor", "customer", "audience", "alternative", "demand", "research"],
+    action: "Review the evidence question, competitors, audience assumptions, and research sources.",
+  },
+  "development-architecture": {
     terms: ["architecture", "stack", "database", "data", "auth", "offline", "api", "security", "technical"],
     action: "Review technical decisions, dependencies, and the smallest foundation that supports the change.",
   },
-  build: {
-    terms: ["feature", "workflow", "screen", "integration", "endpoint", "behavior", "flow"],
-    action: "Update the implementation slice and its acceptance criteria.",
+  "ui-ux-design": {
+    terms: ["screen", "interface", "design", "accessibility", "ux", "ui", "workflow"],
+    action: "Review the affected user experience, interface states, and accessibility criteria.",
   },
-  validation: {
-    terms: ["test", "metric", "quality", "performance", "feedback", "success", "risk"],
-    action: "Add or revise evidence, test cases, and success signals for the change.",
+  "marketing-growth": {
+    terms: ["marketing", "growth", "positioning", "acquisition", "launch", "channel", "audience"],
+    action: "Review positioning, messaging, acquisition experiments, and success signals.",
   },
-  delivery: {
-    terms: ["deploy", "deployment", "release", "hosting", "operations", "cost", "launch", "monitor"],
-    action: "Review release, operating, cost, and rollout implications before delivery.",
+  "finance-budget": {
+    terms: ["budget", "cost", "price", "pricing", "revenue", "subscription", "spend"],
+    action: "Review cost drivers, pricing assumptions, and budget impact before approving the change.",
+  },
+  operations: {
+    terms: ["operations", "deploy", "deployment", "hosting", "monitor", "support", "release"],
+    action: "Review release, operating, monitoring, and handover implications.",
+  },
+  "legal-compliance": {
+    terms: ["legal", "privacy", "security", "compliance", "policy", "consent", "data"],
+    action: "Review privacy, security, policy, and compliance implications with appropriate expertise.",
+  },
+  "customer-support": {
+    terms: ["support", "customer", "feedback", "ticket", "help", "service"],
+    action: "Review support workflows, feedback capture, and service recovery implications.",
+  },
+  automation: {
+    terms: ["automation", "schedule", "workflow", "trigger", "reminder", "notify"],
+    action: "Review automation permissions, idempotency, approvals, and execution limits.",
   },
 };
 

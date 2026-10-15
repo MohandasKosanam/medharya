@@ -17,6 +17,7 @@ import {
   type ProjectDraft,
   type ProjectRequest,
 } from "@/types/project";
+import type { ProjectWorkspace } from "@/types/workspace";
 import {
   createProjectRequest,
   hasProjectDraftErrors,
@@ -35,6 +36,7 @@ import {
 import { createProjectWorkspace } from "@/lib/workspace";
 import { saveProjectWorkspace } from "@/lib/workspace-storage";
 
+import { AuthGate } from "@/components/auth/AuthGate";
 import { ProjectSummary } from "./ProjectSummary";
 
 const FIELD_IDS = {
@@ -80,6 +82,8 @@ export function SolutionBuilder() {
   const [hasHydratedDraft, setHasHydratedDraft] = useState(false);
   const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [anonymousDraftId, setAnonymousDraftId] = useState<string | null>(null);
+  const [showAuthGate, setShowAuthGate] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
@@ -164,7 +168,7 @@ export function SolutionBuilder() {
     }
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextErrors = validationErrors;
     setShowAllErrors(true);
@@ -184,23 +188,78 @@ export function SolutionBuilder() {
     }
 
     const request = createProjectRequest(draft);
-    const workspace = createProjectWorkspace(request);
     setIsCreatingWorkspace(true);
     setWorkspaceError(null);
 
-    if (!saveProjectWorkspace(workspace)) {
+    try {
+      const response = await fetch("/api/auth/anonymous-draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      const payload: unknown = await response.json();
+      const record = typeof payload === "object" && payload !== null
+        ? payload as Record<string, unknown>
+        : {};
+      if (!response.ok || !record.draft || typeof record.draft !== "object") {
+        const message = typeof record.error === "string"
+          ? record.error
+          : "The project draft could not be saved for account handoff.";
+        throw new Error(message);
+      }
+
+      const draftRecord = record.draft as { id?: unknown };
+      if (record.project && typeof record.project === "object") {
+        openWorkspace(record.project as ProjectWorkspace);
+        return;
+      }
+      if (typeof draftRecord.id !== "string") {
+        throw new Error("The server returned an invalid draft id.");
+      }
+
+      setAnonymousDraftId(draftRecord.id);
+      setShowAuthGate(true);
+      setSubmittedRequest(request);
+      setIsCreatingWorkspace(false);
+    } catch (error) {
       setIsCreatingWorkspace(false);
       setWorkspaceError(
-        "This browser could not save the project workspace. Check local storage permissions and try again.",
+        error instanceof Error
+          ? `${error.message} You can still continue locally.`
+          : "The account handoff was unavailable. You can still continue locally.",
       );
       setSubmittedRequest(request);
-      window.requestAnimationFrame(() => {
-        summaryRef.current?.focus();
-      });
+    }
+  }
+
+  function openWorkspace(workspace: ProjectWorkspace) {
+    if (!saveProjectWorkspace(workspace)) {
+      setWorkspaceError(
+        "The project was created, but this browser could not cache the workspace for offline viewing.",
+      );
+    }
+    clearProjectDraft();
+    setShowAuthGate(false);
+    setAnonymousDraftId(null);
+    setIsCreatingWorkspace(false);
+    router.push(`/workspace/${workspace.id}`);
+  }
+
+  function continueLocally() {
+    const request = submittedRequest ?? createProjectRequest(draft);
+    const workspace = createProjectWorkspace(request);
+    if (!saveProjectWorkspace(workspace)) {
+      setWorkspaceError(
+        "This browser could not save the local workspace. Check local storage permissions and try again.",
+      );
+      setShowAuthGate(false);
+      setIsCreatingWorkspace(false);
       return;
     }
-
     clearProjectDraft();
+    setShowAuthGate(false);
+    setAnonymousDraftId(null);
+    setIsCreatingWorkspace(false);
     router.push(`/workspace/${workspace.id}`);
   }
 
@@ -225,6 +284,13 @@ export function SolutionBuilder() {
   return (
     <section className="builder-section" id="builder" aria-labelledby="builder-title">
       <div className="page-width">
+        {showAuthGate && anonymousDraftId ? (
+          <AuthGate
+            draftId={anonymousDraftId}
+            onProjectReady={openWorkspace}
+            onContinueLocally={continueLocally}
+          />
+        ) : null}
         <div className="section-heading builder-heading">
           <div>
             <p className="eyebrow">Solution builder</p>
@@ -308,9 +374,14 @@ export function SolutionBuilder() {
             </div>
 
             {workspaceError ? (
-              <p className="form-alert" role="alert">
-                {workspaceError}
-              </p>
+              <div className="form-alert" role="alert">
+                <span>{workspaceError}</span>
+                {submittedRequest ? (
+                  <button className="button button-small button-secondary" type="button" onClick={continueLocally}>
+                    Continue locally
+                  </button>
+                ) : null}
+              </div>
             ) : null}
 
             <div className="form-body">

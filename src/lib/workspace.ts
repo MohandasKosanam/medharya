@@ -2,6 +2,7 @@ import type { ProjectRequest } from "@/types/project";
 import type { WorkspaceMessage, ProjectMemory, ProjectWorkspace, WorkspaceRequestPatch } from "@/types/workspace";
 
 import { generateSolutionPlan } from "./recommendations";
+import { computeBranchImpactSuggestions, ensureOperatingSystem } from "./operating-system";
 
 export function createStableId(prefix = "project") {
   if (typeof globalThis.crypto?.randomUUID === "function") {
@@ -71,7 +72,7 @@ export function createProjectWorkspace(request: ProjectRequest): ProjectWorkspac
     "You can challenge any decision, edit the brief, or ask me to compare an alternative."
   ].join("\n");
 
-  return {
+  return ensureOperatingSystem({
     id: createStableId(),
     name: projectName(request),
     request,
@@ -81,7 +82,7 @@ export function createProjectWorkspace(request: ProjectRequest): ProjectWorkspac
     plan,
     createdAt,
     updatedAt: createdAt,
-  };
+  });
 }
 
 function requirementSignals(content: string) {
@@ -109,7 +110,7 @@ export function appendWorkspaceMessage(
       ? `Latest user message: ${nextMessage.content.trim().slice(0, 240)}`
       : `Latest assistant response recorded from ${nextMessage.source}.`;
 
-  return {
+  return ensureOperatingSystem({
     ...workspace,
     messages: [...workspace.messages, nextMessage].slice(-80),
     memory: {
@@ -121,7 +122,7 @@ export function appendWorkspaceMessage(
       recentSummary,
     },
     updatedAt: now(),
-  };
+  });
 }
 
 export function applyWorkspaceRequestPatch(
@@ -141,7 +142,7 @@ export function applyWorkspaceRequestPatch(
     patch.additionalRequirements !== undefined ? "requirements updated" : null,
   ].filter(Boolean).join("; ");
 
-  return {
+  const normalizedWorkspace = ensureOperatingSystem({
     ...workspace,
     name: projectName(request),
     request,
@@ -154,6 +155,21 @@ export function applyWorkspaceRequestPatch(
       recentSummary: `The brief was explicitly updated: ${changeSummary || "fields reviewed"}. The baseline plan was regenerated for review.`,
     },
     updatedAt: now(),
+  });
+  const changedRequirement = [patch.idea, patch.additionalRequirements, patch.category, patch.deploymentPreference]
+    .filter(Boolean)
+    .join(" ");
+  if (!changedRequirement || !normalizedWorkspace.operatingSystem) return normalizedWorkspace;
+
+  return {
+    ...normalizedWorkspace,
+    operatingSystem: {
+      ...normalizedWorkspace.operatingSystem,
+      branchImpactSuggestions: computeBranchImpactSuggestions(
+        normalizedWorkspace.operatingSystem.branches,
+        changedRequirement,
+      ),
+    },
   };
 }
 
@@ -165,9 +181,9 @@ export function appendResearchFindings(
     (finding, index, all) => all.findIndex((item) => item.url === finding.url) === index,
   );
 
-  return {
+  return ensureOperatingSystem({
     ...workspace,
     researchFindings: merged.slice(-30),
     updatedAt: now(),
-  };
+  });
 }
