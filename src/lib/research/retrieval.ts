@@ -7,20 +7,23 @@ export const MAX_PAGE_REDIRECTS = 2;
 export const PAGE_TIMEOUT_MS = 8_000;
 
 export class PageRetrievalError extends Error {
+  public readonly code:
+    | "invalid-url"
+    | "blocked-host"
+    | "dns-failed"
+    | "too-many-redirects"
+    | "unsupported-content"
+    | "too-large"
+    | "http-error"
+    | "timeout"
+    | "unreadable";
+
   constructor(
-    public readonly code:
-      | "invalid-url"
-      | "blocked-host"
-      | "dns-failed"
-      | "too-many-redirects"
-      | "unsupported-content"
-      | "too-large"
-      | "http-error"
-      | "timeout"
-      | "unreadable",
+    code: PageRetrievalError["code"],
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = "PageRetrievalError";
   }
 }

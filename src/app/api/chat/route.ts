@@ -159,7 +159,26 @@ async function generateReply(workspace: ProjectWorkspace, message: string, branc
   const result = await provider.complete(prompt);
   if (result.status === "available" && result.text) {
     const citationIds = modelCitationIds(result.text);
+    const knownEvidenceIds = new Set((workspace.researchEvidence ?? []).map((record) => record.id));
+    if (citationIds.some((id) => !knownEvidenceIds.has(id))) {
+      return {
+        ...generateDeterministicAssistantReply(workspace, message),
+        provider: result.provider,
+        model: result.model,
+        notice: "The configured model returned an unknown evidence citation, so Medharya used its deterministic catalogue fallback.",
+        providerReason: "invalid-response",
+      };
+    }
     const citations = workspaceCitations(citationsForEvidence(citationIds, workspace.researchEvidence ?? [], workspace.researchSources ?? []));
+    if (citationIds.length && citations.length !== new Set(citationIds).size) {
+      return {
+        ...generateDeterministicAssistantReply(workspace, message),
+        provider: result.provider,
+        model: result.model,
+        notice: "The configured model returned an evidence citation that could not be resolved, so Medharya used its deterministic catalogue fallback.",
+        providerReason: "invalid-response",
+      };
+    }
     return {
       content: cleanModelText(result.text),
       source: "model-assisted",
@@ -224,7 +243,7 @@ async function chatForOwnedProject(
 
   const reply = await generateReply(project.workspace, message, branchId);
   const userMessage = newMessage("user", message, "user", messageId);
-  const assistantMessage = newMessage(reply.source === "model-assisted" ? "assistant" : "assistant", reply.content, reply.source, undefined, reply.citations);
+  const assistantMessage = newMessage("assistant", reply.content, reply.source, undefined, reply.citations);
   const updated = await updateOwnedProjectWorkspace(projectId, ownerUserId, (currentWorkspace) => {
     const withUser = branchId
       ? appendBranchMessage(currentWorkspace, branchId, userMessage)

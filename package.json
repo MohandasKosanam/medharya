@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "test": "npm run lint && tsc --noEmit && npm run build",
-    "test:smoke": "node scripts/phase2-smoke.mjs && node scripts/next-phase-smoke.mjs && node scripts/intelligence-smoke.mjs"
+    "test:smoke": "node scripts/phase2-smoke.mjs && node scripts/next-phase-smoke.mjs && node scripts/intelligence-smoke.mjs",
+    "test:provider": "node scripts/provider-integration-smoke.mjs",
+    "test:research-safety": "node --experimental-strip-types scripts/research-safety-smoke.mjs"
   },
   "dependencies": {
     "next": "16.4.0",

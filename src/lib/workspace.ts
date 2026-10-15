@@ -1,6 +1,7 @@
 import type { ProjectRequest } from "@/types/project";
 import type { ResearchClaim, ResearchEvidence, ResearchFinding, ResearchSource } from "@/types/research";
 import type { WorkspaceMessage, ProjectMemory, ProjectWorkspace, WorkspaceRequestPatch } from "@/types/workspace";
+import { normalizeResearchUrl } from "./research/evidence";
 
 import { generateSolutionPlan } from "./recommendations";
 import { computeBranchImpactSuggestions, ensureOperatingSystem } from "./operating-system";
@@ -182,7 +183,7 @@ export function appendResearchFindings(
   findings: ProjectWorkspace["researchFindings"],
 ): ProjectWorkspace {
   const merged = [...workspace.researchFindings, ...findings].filter(
-    (finding, index, all) => all.findIndex((item) => item.url === finding.url) === index,
+    (finding, index, all) => all.findIndex((item) => normalizeResearchUrl(item.url) === normalizeResearchUrl(finding.url)) === index,
   );
 
   return ensureOperatingSystem({

@@ -131,6 +131,23 @@ recommendation differentiation, explicit live-research availability states,
 server-owned project chat persistence and idempotency, authentication
 boundaries, and cross-user isolation. It does not require an external provider.
 
+The provider adapter can be exercised against a local mock endpoint (including a
+transient failure and retry) with:
+
+```bash
+npm run test:provider
+```
+
+This starts a temporary local production server and never contacts a real AI
+provider or prints a credential.
+
+The public-page retrieval guardrails (private-network blocking, redirect checks,
+body limits, and HTML extraction) have a deterministic mocked check:
+
+```bash
+npm run test:research-safety
+```
+
 For a running production server, the next-phase ownership and operating-system
 smoke check is:
 
