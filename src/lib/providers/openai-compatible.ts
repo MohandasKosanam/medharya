@@ -1,10 +1,66 @@
-import type { ModelPrompt, ModelProvider, ModelProviderResult } from "./types";
+import {
+  PROVIDER_ERROR_REASONS,
+  type ModelPrompt,
+  type ModelProvider,
+  type ModelProviderResult,
+  type ModelProviderUsage,
+  type ProviderErrorReason,
+} from "./types";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
-const MAX_MODEL_OUTPUT = 12_000;
+const DEFAULT_TIMEOUT_MS = 15_000;
+const MIN_TIMEOUT_MS = 2_000;
+const MAX_TIMEOUT_MS = 45_000;
+const MAX_OUTPUT_TOKENS = 900;
+const MAX_REQUEST_ATTEMPTS = 2;
+const RETRY_DELAY_MS = 100;
+const CONTEXT_PREFIX = "Structured project context:\n";
 
-function configuredValue(value: string | undefined) {
-  return value?.trim() || null;
+export const MODEL_PROVIDER_LIMITS = {
+  maxPromptChars: 8_000,
+  maxContextChars: 24_000,
+  maxMessageChars: 4_000,
+  maxRecentMessages: 8,
+  maxOutputChars: 12_000,
+} as const;
+
+export const MAX_PROMPT_CHARS = MODEL_PROVIDER_LIMITS.maxPromptChars;
+export const MAX_CONTEXT_CHARS = MODEL_PROVIDER_LIMITS.maxContextChars;
+export const MAX_MESSAGE_CHARS = MODEL_PROVIDER_LIMITS.maxMessageChars;
+export const MAX_OUTPUT_CHARS = MODEL_PROVIDER_LIMITS.maxOutputChars;
+
+export interface ProviderResponse {
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown> | unknown;
+}
+
+export type ModelProviderRequest = (input: string, init?: RequestInit) => ProviderResponse | Promise<ProviderResponse>;
+export type ProviderRequest = ModelProviderRequest;
+
+export interface OpenAICompatibleRequestConfig {
+  apiKey?: string;
+  model?: string;
+  baseUrl?: string;
+  timeoutMs?: number;
+}
+
+export interface OpenAICompatibleProviderOptions extends OpenAICompatibleRequestConfig {
+  request?: ModelProviderRequest;
+}
+
+export interface GetConfiguredModelProviderOptions {
+  env?: Readonly<Record<string, string | undefined>>;
+  request?: ModelProviderRequest;
+}
+
+export interface NormalizedOpenAICompatibleResponse {
+  text: string;
+  usage?: ModelProviderUsage;
+}
+
+function configuredValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function endpointFor(baseUrl: string) {
@@ -18,92 +74,273 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function responseText(value: unknown) {
-  if (!isRecord(value) || !Array.isArray(value.choices)) return null;
-  const firstChoice = value.choices[0];
-  if (!isRecord(firstChoice) || !isRecord(firstChoice.message)) return null;
-  return typeof firstChoice.message.content === "string"
-    ? firstChoice.message.content.trim().slice(0, MAX_MODEL_OUTPUT)
+function boundedText(value: unknown, maxLength: number) {
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+function tokenCount(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
     : null;
 }
 
-function statusFromError(error: unknown): ModelProviderResult["reason"] {
-  if (error instanceof Error && error.name === "AbortError") return "timeout";
-  return "provider-error";
+function usageFromResponse(value: unknown): ModelProviderUsage | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const usage: ModelProviderUsage = {};
+  const promptTokens = tokenCount(value.prompt_tokens ?? value.promptTokens ?? value.input_tokens ?? value.inputTokens);
+  const completionTokens = tokenCount(
+    value.completion_tokens ?? value.completionTokens ?? value.output_tokens ?? value.outputTokens,
+  );
+  const totalTokens = tokenCount(value.total_tokens ?? value.totalTokens);
+
+  if (promptTokens !== null) usage.promptTokens = promptTokens;
+  if (completionTokens !== null) usage.completionTokens = completionTokens;
+  if (totalTokens !== null) usage.totalTokens = totalTokens;
+
+  return Object.keys(usage).length ? usage : undefined;
 }
 
-export function getConfiguredModelProvider(): ModelProvider | null {
-  const apiKey = configuredValue(process.env.MEDHARYA_AI_API_KEY);
-  const model = configuredValue(process.env.MEDHARYA_AI_MODEL);
-  const baseUrl = configuredValue(process.env.MEDHARYA_AI_BASE_URL) ?? DEFAULT_BASE_URL;
+function contentText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
 
-  if (!apiKey || !model) return null;
+  return value
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (!isRecord(part)) return "";
+      if (typeof part.text === "string") return part.text;
+      if (isRecord(part.text) && typeof part.text.value === "string") return part.text.value;
+      return "";
+    })
+    .join("");
+}
 
+export function normalizeOpenAICompatibleResponse(value: unknown): NormalizedOpenAICompatibleResponse | null {
+  if (!isRecord(value) || !Array.isArray(value.choices)) return null;
+
+  const firstChoice = value.choices[0];
+  if (!isRecord(firstChoice)) return null;
+
+  const message = isRecord(firstChoice.message) ? firstChoice.message : null;
+  const messageText = message ? contentText(message.content) : "";
+  const text = boundedText(messageText, MAX_OUTPUT_CHARS) || boundedText(firstChoice.text, MAX_OUTPUT_CHARS);
+  const usage = usageFromResponse(value.usage);
+  if (!text) return null;
+
+  return {
+    text,
+    ...(usage ? { usage } : {}),
+  };
+}
+
+function isValidBaseUrl(baseUrl: string) {
   try {
     const parsedUrl = new URL(baseUrl);
-    if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") return null;
+    return (parsedUrl.protocol === "https:" || parsedUrl.protocol === "http:") && !parsedUrl.username && !parsedUrl.password;
   } catch {
-    return null;
+    return false;
   }
+}
+
+function timeoutFor(value: unknown) {
+  const parsed = Number(value);
+  const timeout = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
+  return Math.min(Math.max(timeout, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
+}
+
+function boundedPrompt(prompt: ModelPrompt) {
+  const candidate = prompt as Partial<ModelPrompt> | null | undefined;
+  const system = boundedText(candidate?.system, MAX_PROMPT_CHARS);
+  const context = boundedText(candidate?.context, Math.max(MAX_CONTEXT_CHARS - CONTEXT_PREFIX.length, 0));
+  const recentMessages = Array.isArray(candidate?.recentMessages)
+    ? candidate.recentMessages.slice(-MODEL_PROVIDER_LIMITS.maxRecentMessages).map((message) => ({
+        role: message?.role === "assistant" ? "assistant" : "user",
+        content: boundedText(message?.content, MAX_MESSAGE_CHARS),
+      }))
+    : [];
+  const userMessage = boundedText(candidate?.userMessage, MAX_MESSAGE_CHARS);
+
+  return {
+    system,
+    context: `${CONTEXT_PREFIX}${context}`,
+    recentMessages,
+    userMessage,
+  };
+}
+
+function unavailable(reason: ProviderErrorReason, model: string | null): ModelProviderResult {
+  return {
+    status: "unavailable",
+    provider: "openai-compatible",
+    ...(model ? { model } : {}),
+    reason,
+  };
+}
+
+function isAbortError(error: unknown) {
+  return (error instanceof Error && error.name === "AbortError") || (isRecord(error) && error.name === "AbortError");
+}
+
+function reasonFromRequestError(error: unknown): ProviderErrorReason {
+  return isAbortError(error) ? PROVIDER_ERROR_REASONS.timeout : PROVIDER_ERROR_REASONS.transientError;
+}
+
+function reasonFromStatus(status: number): ProviderErrorReason {
+  if (status === 401 || status === 403) return PROVIDER_ERROR_REASONS.auth;
+  if (status === 408 || status === 504) return PROVIDER_ERROR_REASONS.timeout;
+  if (status === 429) return PROVIDER_ERROR_REASONS.rateLimit;
+  if (status >= 500) return PROVIDER_ERROR_REASONS.transientError;
+  return PROVIDER_ERROR_REASONS.invalidResponse;
+}
+
+function requestFrom(value: ModelProviderRequest | { request?: ModelProviderRequest } | undefined) {
+  if (typeof value === "function") return value;
+  return value?.request ?? fetch;
+}
+
+function retryableReason(reason: ProviderErrorReason | undefined) {
+  return reason === PROVIDER_ERROR_REASONS.timeout || reason === PROVIDER_ERROR_REASONS.rateLimit || reason === PROVIDER_ERROR_REASONS.transientError;
+}
+
+function waitBeforeRetry(attempt: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, RETRY_DELAY_MS * (attempt + 1)));
+}
+
+async function requestOnce(
+  config: OpenAICompatibleRequestConfig,
+  prompt: ModelPrompt,
+  request: ModelProviderRequest,
+): Promise<ModelProviderResult> {
+  const apiKey = configuredValue(config.apiKey);
+  const model = configuredValue(config.model);
+  const baseUrl = configuredValue(config.baseUrl) ?? DEFAULT_BASE_URL;
+
+  if (!apiKey || !model || !isValidBaseUrl(baseUrl)) {
+    return unavailable(PROVIDER_ERROR_REASONS.missingConfig, model);
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutFor(config.timeoutMs));
+
+  try {
+    const safePrompt = boundedPrompt(prompt);
+    const response = await request(endpointFor(baseUrl), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        messages: [
+          { role: "system", content: safePrompt.system },
+          { role: "system", content: safePrompt.context },
+          ...safePrompt.recentMessages,
+          { role: "user", content: safePrompt.userMessage },
+        ],
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) return unavailable(reasonFromStatus(response.status), model);
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      return unavailable(PROVIDER_ERROR_REASONS.invalidResponse, model);
+    }
+
+    const normalized = normalizeOpenAICompatibleResponse(payload);
+    if (!normalized) return unavailable(PROVIDER_ERROR_REASONS.invalidResponse, model);
+
+    return {
+      status: "available",
+      text: normalized.text,
+      provider: "openai-compatible",
+      model,
+      ...(normalized.usage ? { usage: normalized.usage } : {}),
+    };
+  } catch (error) {
+    return unavailable(reasonFromRequestError(error), model);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function requestOpenAICompatible(
+  config: OpenAICompatibleRequestConfig,
+  prompt: ModelPrompt,
+  requestOrOptions?: ModelProviderRequest | { request?: ModelProviderRequest },
+): Promise<ModelProviderResult> {
+  const apiKey = configuredValue(config.apiKey);
+  const model = configuredValue(config.model);
+  const baseUrl = configuredValue(config.baseUrl) ?? DEFAULT_BASE_URL;
+
+  if (!apiKey || !model || !isValidBaseUrl(baseUrl)) {
+    return unavailable(PROVIDER_ERROR_REASONS.missingConfig, model);
+  }
+
+  const request = requestFrom(requestOrOptions);
+  let result: ModelProviderResult = unavailable(PROVIDER_ERROR_REASONS.transientError, model);
+  for (let attempt = 0; attempt < MAX_REQUEST_ATTEMPTS; attempt += 1) {
+    result = await requestOnce({ ...config, apiKey, model, baseUrl }, prompt, request);
+    if (result.status === "available" || !retryableReason(result.reason) || attempt === MAX_REQUEST_ATTEMPTS - 1) {
+      return result;
+    }
+    await waitBeforeRetry(attempt);
+  }
+
+  return result;
+}
+
+export function createOpenAICompatibleProvider(options: OpenAICompatibleProviderOptions): ModelProvider {
+  const model = configuredValue(options.model) ?? "";
+  const request = options.request;
 
   return {
     name: "OpenAI-compatible provider",
     model,
-    async complete(prompt: ModelPrompt) {
-      const controller = new AbortController();
-      const timeoutMs = Math.min(
-        Math.max(Number(process.env.MEDHARY_AI_TIMEOUT_MS) || 15_000, 2_000),
-        45_000,
+    complete(prompt: ModelPrompt) {
+      return requestOpenAICompatible(
+        {
+          apiKey: options.apiKey,
+          model: options.model,
+          baseUrl: options.baseUrl,
+          timeoutMs: options.timeoutMs,
+        },
+        prompt,
+        request,
       );
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-      try {
-        const response = await fetch(endpointFor(baseUrl), {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model,
-            temperature: 0.2,
-            max_tokens: 900,
-            messages: [
-              { role: "system", content: prompt.system },
-              { role: "system", content: `Structured project context:\n${prompt.context}` },
-              ...prompt.recentMessages,
-              { role: "user", content: prompt.userMessage },
-            ],
-          }),
-          signal: controller.signal,
-        });
-
-        if (response.status === 429) {
-          return { status: "unavailable", provider: "openai-compatible", model, reason: "rate-limited" };
-        }
-        if (!response.ok) {
-          return { status: "unavailable", provider: "openai-compatible", model, reason: "provider-error" };
-        }
-
-        const payload: unknown = await response.json();
-        const text = responseText(payload);
-        return text
-          ? { status: "available", text, provider: "openai-compatible", model }
-          : { status: "unavailable", provider: "openai-compatible", model, reason: "invalid-response" };
-      } catch (error) {
-        return {
-          status: "unavailable",
-          provider: "openai-compatible",
-          model,
-          reason: statusFromError(error),
-        };
-      } finally {
-        clearTimeout(timeout);
-      }
     },
   };
 }
 
-export function modelProviderConfigurationStatus() {
-  return getConfiguredModelProvider() ? "configured" : "not-configured";
+export function getConfiguredModelProvider(
+  options: GetConfiguredModelProviderOptions | ModelProviderRequest = {},
+): ModelProvider | null {
+  const request = typeof options === "function" ? options : options.request;
+  const env = typeof options === "function" ? process.env : options.env ?? process.env;
+  const apiKey = configuredValue(env.MEDHARYA_AI_API_KEY);
+  const model = configuredValue(env.MEDHARYA_AI_MODEL);
+  const baseUrl = configuredValue(env.MEDHARYA_AI_BASE_URL) ?? DEFAULT_BASE_URL;
+
+  if (!apiKey || !model || !isValidBaseUrl(baseUrl)) return null;
+
+  return createOpenAICompatibleProvider({
+    apiKey,
+    model,
+    baseUrl,
+    timeoutMs: env.MEDHARYA_AI_TIMEOUT_MS ? Number(env.MEDHARYA_AI_TIMEOUT_MS) : undefined,
+    request,
+  });
+}
+
+export function modelProviderConfigurationStatus(
+  options?: GetConfiguredModelProviderOptions | ModelProviderRequest,
+): "configured" | "not-configured" {
+  return getConfiguredModelProvider(options) ? "configured" : "not-configured";
 }

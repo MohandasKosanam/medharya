@@ -10,12 +10,31 @@ export interface ModelPrompt {
   userMessage: string;
 }
 
+export const PROVIDER_ERROR_REASONS = {
+  missingConfig: "missing-config",
+  auth: "auth",
+  rateLimit: "rate-limit",
+  timeout: "timeout",
+  transientError: "transient-error",
+  invalidResponse: "invalid-response",
+} as const;
+
+export type ProviderErrorReason = (typeof PROVIDER_ERROR_REASONS)[keyof typeof PROVIDER_ERROR_REASONS];
+export type ModelProviderErrorReason = ProviderErrorReason;
+
+export interface ModelProviderUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
 export interface ModelProviderResult {
   status: "available" | "unavailable";
   text?: string;
   provider?: string;
   model?: string;
-  reason?: "not-configured" | "timeout" | "rate-limited" | "provider-error" | "invalid-response";
+  reason?: ProviderErrorReason;
+  usage?: ModelProviderUsage;
 }
 
 export interface ModelProvider {
