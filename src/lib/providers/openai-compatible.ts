@@ -6,6 +6,7 @@ import {
   type ModelProviderUsage,
   type ProviderErrorReason,
 } from "./types";
+import { getConfiguredMedharyaAlphaProvider } from "./alpha";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -322,9 +323,22 @@ export function createOpenAICompatibleProvider(options: OpenAICompatibleProvider
 export function getConfiguredModelProvider(
   options: GetConfiguredModelProviderOptions | ModelProviderRequest = {},
 ): ModelProvider | null {
+  return selectModelProvider(options);
+}
+
+export function selectModelProvider(
+  options: GetConfiguredModelProviderOptions | ModelProviderRequest = {},
+): ModelProvider | null {
   const request = typeof options === "function" ? options : options.request;
   const env = typeof options === "function" ? process.env : options.env ?? process.env;
   if (env.MEDHARYA_DISABLE_EXTERNAL_PROVIDERS === "1") return null;
+
+  const requestedProvider = env.MEDHARYA_AI_PROVIDER?.trim().toLowerCase();
+  if (requestedProvider === "alpha") {
+    return getConfiguredMedharyaAlphaProvider({ env, request });
+  }
+  if (requestedProvider === "disabled" || requestedProvider === "none" || requestedProvider === "off") return null;
+
   const apiKey = configuredValue(env.MEDHARYA_AI_API_KEY);
   const model = configuredValue(env.MEDHARYA_AI_MODEL);
   const baseUrl = configuredValue(env.MEDHARYA_AI_BASE_URL) ?? DEFAULT_BASE_URL;
@@ -339,6 +353,8 @@ export function getConfiguredModelProvider(
     request,
   });
 }
+
+export const selectConfiguredModelProvider = selectModelProvider;
 
 export function modelProviderConfigurationStatus(
   options?: GetConfiguredModelProviderOptions | ModelProviderRequest,

@@ -33,6 +33,8 @@ export interface ModelProviderResult {
   text?: string;
   provider?: string;
   model?: string;
+  baseModel?: string;
+  adapterVersion?: string;
   reason?: ProviderErrorReason;
   usage?: ModelProviderUsage;
 }
