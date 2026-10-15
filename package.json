@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "npm run lint && tsc --noEmit && npm run build"
   },
   "dependencies": {
     "next": "16.4.0",
