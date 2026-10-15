@@ -324,6 +324,7 @@ export function getConfiguredModelProvider(
 ): ModelProvider | null {
   const request = typeof options === "function" ? options : options.request;
   const env = typeof options === "function" ? process.env : options.env ?? process.env;
+  if (env.MEDHARYA_DISABLE_EXTERNAL_PROVIDERS === "1") return null;
   const apiKey = configuredValue(env.MEDHARYA_AI_API_KEY);
   const model = configuredValue(env.MEDHARYA_AI_MODEL);
   const baseUrl = configuredValue(env.MEDHARYA_AI_BASE_URL) ?? DEFAULT_BASE_URL;

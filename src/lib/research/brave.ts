@@ -84,7 +84,9 @@ export interface BraveSearchOptions {
 }
 
 export async function searchWithBrave(query: string, limit = 5, options: BraveSearchOptions = {}): Promise<ResearchResponse> {
-  const key = configuredKey(options.apiKey);
+  const key = process.env.MEDHARYA_DISABLE_EXTERNAL_PROVIDERS === "1" && options.apiKey === undefined
+    ? null
+    : configuredKey(options.apiKey);
   if (!key) {
     return {
       status: "unavailable",

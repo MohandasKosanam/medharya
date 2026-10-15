@@ -113,7 +113,7 @@ export async function POST(request: Request) {
 
     const projectId = isRecord(body) && typeof body.projectId === "string" ? body.projectId.trim() : "";
     const branchId = isRecord(body) && typeof body.branchId === "string" && body.branchId.trim() ? body.branchId.trim() : undefined;
-    const requestedLimit = isRecord(body) && typeof body.limit === "number" ? body.limit : 5;
+    const requestedLimit = isRecord(body) && typeof body.limit === "number" && Number.isFinite(body.limit) ? body.limit : 5;
     if (projectId.length > MAX_PROJECT_ID_LENGTH || branchId && branchId.length > MAX_BRANCH_ID_LENGTH) {
       return NextResponse.json({ error: "The research context identifier is invalid." }, { status: 400 });
     }

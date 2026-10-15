@@ -5,10 +5,12 @@
 Medharya is an AI-powered solution builder for turning an idea into a practical
 technology direction, an explicit set of trade-offs, and a buildable roadmap.
 
-The current Phase 2 implementation is a local-first prototype. It creates a
-browser-persisted project workspace, keeps structured project memory, provides a
-context-aware conversation, generates a deterministic catalogue baseline, and
-supports optional server-side model and web-research providers.
+The current implementation is a local-first product prototype with an optional
+server-owned path. It creates a browser-persisted project workspace, keeps
+structured project memory, loads authenticated project context on the server,
+generates a deterministic catalogue baseline, and supports optional server-side
+model and web-research providers without pretending that unavailable services
+ran.
 
 ## Current capabilities
 
@@ -17,15 +19,22 @@ supports optional server-side model and web-research providers.
 - Browser-local project persistence; no account, cloud sync, or database.
 - Editable project brief with explicit save-and-regenerate behavior.
 - Context-aware chat with a clear deterministic fallback when no model provider
-  is configured.
+  is configured or a configured provider times out, is rate-limited, rejects its
+  credential, or returns invalid data.
 - Server-side deterministic plan endpoint for inspecting and testing structured
   recommendation output.
 - Curated technology catalogue with official links and intentionally unverified
   pricing metadata.
 - Deterministic recommendation and roadmap engine that reacts to category,
   budget, experience, deployment, preferences, and requirements.
-- Optional OpenAI-compatible server-side provider adapter.
-- Optional Brave Search server-side research adapter.
+- Optional OpenAI-compatible server-side provider adapter with bounded prompts,
+  normalized output, usage metadata, transient retries, and secret-safe errors.
+- Optional Brave Search server-side research adapter with bounded public-page
+  retrieval, redirect checks, content-type/size/time limits, and SSRF defenses.
+- Evidence records link search snippets or retrieved page text to source IDs;
+  claims and citations can only reference evidence captured by the server.
+- Server-owned chat/research loads and persists the authenticated project rather
+  than trusting a client-supplied project snapshot.
 - Explicit provenance, source, uncertainty, and unavailable-provider states.
 - Optional server-side anonymous-draft handoff, account signup/login, logout,
   expiring httpOnly sessions, and ownership-checked project routes.
@@ -34,8 +43,9 @@ supports optional server-side model and web-research providers.
   dry runs.
 
 This prototype does **not** claim live recommendations, current prices,
-verified compatibility, deployment, or web research unless the corresponding
-provider is configured and the UI marks the result as available.
+verified compatibility, deployment, or human-verified web research. When the
+corresponding provider is configured, the UI marks model output, search
+snippets, retrieved pages, and evidence-backed summaries separately.
 
 ## Requirements
 
@@ -101,18 +111,25 @@ npm run build
 For a running local server, the lightweight HTTP smoke check can be run with:
 
 ```bash
-node scripts/phase2-smoke.mjs
+MEDHARYA_DISABLE_EXTERNAL_PROVIDERS=1 node scripts/phase2-smoke.mjs
 ```
 
 To target another server:
 
 ```bash
-MEDHARYA_BASE_URL=http://localhost:3002 node scripts/phase2-smoke.mjs
+MEDHARYA_BASE_URL=http://localhost:3002 MEDHARYA_DISABLE_EXTERNAL_PROVIDERS=1 node scripts/phase2-smoke.mjs
 ```
 
-The smoke check verifies the landing page, chat input validation, and the
-workspace route, recommendation differentiation, and the explicit live-research
-available/unavailable response. It does not require an external provider.
+The complete smoke command is:
+
+```bash
+MEDHARYA_BASE_URL=http://localhost:3000 MEDHARYA_DISABLE_EXTERNAL_PROVIDERS=1 npm run test:smoke
+```
+
+It verifies the landing page, chat input validation, workspace route,
+recommendation differentiation, explicit live-research availability states,
+server-owned project chat persistence and idempotency, authentication
+boundaries, and cross-user isolation. It does not require an external provider.
 
 For a running production server, the next-phase ownership and operating-system
 smoke check is:
@@ -144,9 +161,11 @@ self-hosted or hosted endpoint can be supplied explicitly with
 `MEDHARYA_AI_BASE_URL`.
 
 Keys are read only in the server route at `/api/chat`. They are never included
-in browser bundles or project-local storage. Provider failures, timeouts, rate
-limits, missing configuration, and invalid responses fall back to the
-deterministic catalogue response with an explicit notice.
+in browser bundles or project-local storage. Prompts and outputs are bounded;
+provider failures are normalized into missing-config, auth, rate-limit, timeout,
+transient-error, or invalid-response states. The adapter retries bounded
+transient failures once, then falls back to the deterministic catalogue
+response with an explicit notice.
 
 ### Live research provider
 
@@ -157,9 +176,15 @@ BRAVE_SEARCH_API_KEY=replace-me
 ```
 
 Without this key, `/api/research` returns an explicit unavailable response and
-the workspace adds no citations. With it, retrieved results are stored in the
-local project record as `retrieved-not-yet-verified` evidence. Medharya does not
-pretend that a search result is a verified recommendation.
+the workspace adds no citations. With it, the server stores bounded search
+results as `search-snippet` evidence and attempts safe retrieval of up to three
+public HTML/text pages. Retrieved page evidence is marked separately from a
+snippet; failed or unsafe page retrieval never becomes a citation. Source-backed
+claims remain unverified until a person reviews the source.
+
+For offline smoke tests, set `MEDHARYA_DISABLE_EXTERNAL_PROVIDERS=1`. This
+forces the standard routes to exercise deterministic/unavailable behavior even
+if a developer shell happens to contain provider credentials.
 
 ## Docker
 
@@ -199,18 +224,21 @@ src/
     workspace.ts               project memory and plan updates
     workspace-storage.ts       defensive browser persistence
     providers/                 server-side model adapter
-    research/                  server-side Brave adapter
+    research/                  Brave adapter, safe retrieval, evidence, summaries
     server/repository.ts       file-backed auth/project repository boundary
   types/
     project.ts                 Phase 1 request contract
     workspace.ts               project and conversation memory
     solution.ts                structured plan contract
-    research.ts                research evidence contract
+    research.ts                research source/evidence/claim/citation contracts
 ```
 
 The browser owns early persistence so the prototype works without a database.
-`ProjectWorkspace` and its storage adapter are deliberately separate from the
-UI so a server repository can replace local storage later without rewriting the
+Authenticated project chat and research use the server repository as the source
+of truth and update the browser as a cache. Local draft chat/research remains an
+explicit compatibility path and is labelled as not server-persisted.
+`ProjectWorkspace` and its storage adapter are deliberately separate from the UI
+so a database can replace the file repository later without rewriting the
 recommendation and conversation contracts.
 
 ## Data and security boundaries
@@ -221,8 +249,15 @@ recommendation and conversation contracts.
   database infrastructure.
 - Model and search keys are server-only environment variables.
 - Incoming chat and research messages are length-limited and validated.
+- Project chat and research ignore client workspace snapshots when an
+  authenticated `projectId` is supplied; ownership is checked before loading or
+  persisting context.
 - Retrieved web content is treated as untrusted text; it cannot invoke tools or
-  change project decisions.
+  change project decisions. Page retrieval rejects local/private DNS targets,
+  credentials in URLs, unsafe redirects, unsupported content, oversized bodies,
+  and timeouts.
+- Model citations are accepted only when their evidence IDs resolve to server-
+  captured evidence; model-provided URLs are never promoted into citations.
 - Important brief changes require an explicit user save action.
 - No payments, authentication, deployment, unrestricted shell access, or
   arbitrary model tool execution is implemented.
@@ -236,9 +271,13 @@ recommendation and conversation contracts.
 - Pricing and free-tier metadata are deliberately not asserted as current.
 - The deterministic fallback is useful for structured planning but is not an AI
   model and does not perform live research.
-- A configured model provider receives the structured brief and recent message
-  window on the server; model output is not automatically allowed to mutate the
-  project brief or invoke privileged actions.
+- A configured model provider receives the authenticated structured brief,
+  branch context, bounded recent message window, and captured evidence on the
+  server; model output is not automatically allowed to mutate the project brief
+  or invoke privileged actions.
+- Brave search and public-page retrieval are live network operations when
+  enabled. They are bounded and source-linked, but they do not prove that a
+  source is truthful or current.
 - Scheduled automations are not enabled. Automation Studio currently records
   safe manual dry runs only; no background worker or recurring scheduler is
   claimed.
