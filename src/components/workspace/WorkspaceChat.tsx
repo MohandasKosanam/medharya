@@ -8,6 +8,7 @@ type WorkspaceChatProps = {
   messages: WorkspaceMessage[];
   isSending: boolean;
   error: string | null;
+  notice: string | null;
   onSend: (content: string) => void;
   onRetry?: () => void;
 };
@@ -24,7 +25,7 @@ function timeLabel(value: string) {
   return Number.isNaN(date.valueOf()) ? "" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function WorkspaceChat({ messages, isSending, error, onSend, onRetry }: WorkspaceChatProps) {
+export function WorkspaceChat({ messages, isSending, error, notice, onSend, onRetry }: WorkspaceChatProps) {
   const [draft, setDraft] = useState("");
 
   function send() {
@@ -62,7 +63,7 @@ export function WorkspaceChat({ messages, isSending, error, onSend, onRetry }: W
               <div className="message-citations">
                 {message.citations.map((citation) => (
                   <a href={citation.url} target="_blank" rel="noreferrer" key={citation.url}>
-                    {citation.title} <span aria-hidden="true">↗</span>
+                    {citation.title} {citation.evidenceId ? <small>Evidence {citation.evidenceId}</small> : null} <span aria-hidden="true">↗</span>
                   </a>
                 ))}
               </div>
@@ -82,6 +83,7 @@ export function WorkspaceChat({ messages, isSending, error, onSend, onRetry }: W
           {onRetry ? <button className="button button-secondary button-small" type="button" onClick={onRetry} disabled={isSending}>Retry server response</button> : null}
         </div>
       ) : null}
+      {notice ? <p className="workspace-inline-note" role="status">{notice}</p> : null}
       <div className="chat-composer">
         <label className="sr-only" htmlFor="workspace-message">Message Medharya</label>
         <textarea

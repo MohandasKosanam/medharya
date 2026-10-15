@@ -37,6 +37,7 @@ import {
   createProjectRequest,
   validateProjectDraft,
 } from "@/lib/validation";
+import type { ProjectWorkspace } from "@/types/workspace";
 
 const scrypt = promisify(nodeScrypt) as unknown as (
   password: string | Buffer,
@@ -565,6 +566,36 @@ export function clearSessionCookie(cookieStore: CookieStoreLike) {
 export async function getOwnedProject(projectId: string, ownerUserId: string) {
   const database = await readServerDatabase();
   return database.projects.find((project) => project.id === projectId && project.ownerUserId === ownerUserId) || null;
+}
+
+/**
+ * Apply a server-created workspace change after re-checking ownership inside the
+ * serialized mutation. The updater never receives client-owned state from a
+ * route, so chat and research cannot overwrite another project by id alone.
+ */
+export async function updateOwnedProjectWorkspace(
+  projectId: string,
+  ownerUserId: string,
+  updater: (workspace: ProjectWorkspace) => ProjectWorkspace,
+) {
+  return mutateDatabase((database) => {
+    const project = database.projects.find((candidate) => candidate.id === projectId && candidate.ownerUserId === ownerUserId);
+    if (!project) return null;
+    const nextWorkspace = updater(project.workspace);
+    if (
+      nextWorkspace.id !== project.id ||
+      nextWorkspace.messages.length > 100 ||
+      nextWorkspace.researchFindings.length > 100 ||
+      (nextWorkspace.researchSources?.length ?? 0) > 150 ||
+      (nextWorkspace.researchEvidence?.length ?? 0) > 150 ||
+      (nextWorkspace.researchClaims?.length ?? 0) > 150
+    ) {
+      throw new RepositoryError("invalid-input", "The generated project update exceeded a safe size limit.");
+    }
+    project.workspace = nextWorkspace;
+    project.updatedAt = nextWorkspace.updatedAt;
+    return project;
+  });
 }
 
 export async function updateOwnedProject(projectId: string, ownerUserId: string, patch: WorkspaceRequestPatch) {

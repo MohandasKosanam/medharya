@@ -12,6 +12,8 @@ export type WorkspaceMessageSource =
   | "web-researched";
 
 export interface WorkspaceMessageCitation {
+  evidenceId?: string;
+  sourceId?: string;
   title: string;
   url: string;
   retrievedAt: string;

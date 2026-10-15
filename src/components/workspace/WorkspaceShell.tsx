@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { Brand } from "@/components/layout/Brand";
 import type { ResearchResponse } from "@/types/research";
 import type { WorkspaceMessage, ProjectWorkspace, WorkspaceRequestPatch } from "@/types/workspace";
-import { appendResearchFindings, appendWorkspaceMessage, applyWorkspaceRequestPatch, createStableId } from "@/lib/workspace";
+import { appendResearchBundle, appendWorkspaceMessage, applyWorkspaceRequestPatch, createStableId } from "@/lib/workspace";
 import { ensureOperatingSystem } from "@/lib/operating-system";
 import { generateDeterministicAssistantReply } from "@/lib/assistant";
 import { loadProjectWorkspace, saveProjectWorkspace } from "@/lib/workspace-storage";
@@ -52,9 +52,11 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
   const [workspace, setWorkspace] = useState<ProjectWorkspace | null>(null);
   const [loadState, setLoadState] = useState<WorkspaceState>("loading");
   const [chatError, setChatError] = useState<string | null>(null);
-  const [retryState, setRetryState] = useState<{ workspace: ProjectWorkspace; content: string } | null>(null);
+  const [retryState, setRetryState] = useState<{ workspace: ProjectWorkspace; content: string; messageId: string; serverBacked: boolean } | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
+  const [chatNotice, setChatNotice] = useState<string | null>(null);
+  const [serverBacked, setServerBacked] = useState(false);
   const [researchState, setResearchState] = useState<"idle" | "working" | "unavailable" | "error">("idle");
   const [researchMessage, setResearchMessage] = useState<string | null>(null);
 
@@ -62,10 +64,10 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
     const frame = window.requestAnimationFrame(() => {
       void (async () => {
         const savedWorkspace = loadProjectWorkspace(projectId);
+        const hasLocalWorkspace = Boolean(savedWorkspace);
         if (savedWorkspace) {
           setWorkspace(ensureOperatingSystem(savedWorkspace));
           setLoadState("ready");
-          return;
         }
 
         try {
@@ -75,13 +77,15 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
             const serverWorkspace = ensureOperatingSystem(payload.project as ProjectWorkspace);
             saveProjectWorkspace(serverWorkspace);
             setWorkspace(serverWorkspace);
+            setServerBacked(true);
             setLoadState("ready");
             return;
           }
         } catch {
           // The local-first fallback below remains the honest state when the server is unavailable.
         }
-        setLoadState("missing");
+        setServerBacked(false);
+        if (!hasLocalWorkspace) setLoadState("missing");
       })();
     });
 
@@ -112,31 +116,39 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
     if (!workspace || isSending) return;
     setIsSending(true);
     setChatError(null);
+    setChatNotice(null);
 
     const userMessage = makeMessage("user", content, "user");
     const workspaceWithUserMessage = appendWorkspaceMessage(workspace, userMessage);
-    persist(workspaceWithUserMessage);
+    if (!serverBacked) persist(workspaceWithUserMessage);
 
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace: workspaceWithUserMessage, message: content }),
+        body: JSON.stringify(serverBacked
+          ? { projectId, message: content, messageId: userMessage.id }
+          : { workspace: workspaceWithUserMessage, message: content }),
       });
       const payload = await readResponse(response);
       if (!response.ok || typeof payload.content !== "string") {
         throw new Error(typeof payload.error === "string" ? payload.error : "The chat service returned an invalid response.");
       }
 
-      const source: WorkspaceMessage["source"] = payload.source === "model-assisted" ? "model-assisted" : "deterministic-fallback";
-      const notice = typeof payload.notice === "string" ? `\n\nSource note: ${payload.notice}` : "";
-      persist(appendWorkspaceMessage(workspaceWithUserMessage, makeMessage("assistant", `${payload.content}${notice}`, source)));
+      if (serverBacked && payload.workspace && typeof payload.workspace === "object") {
+        persist(ensureOperatingSystem(payload.workspace as ProjectWorkspace));
+        setChatNotice(typeof payload.notice === "string" ? payload.notice : null);
+      } else {
+        const source: WorkspaceMessage["source"] = payload.source === "model-assisted" ? "model-assisted" : "deterministic-fallback";
+        const notice = typeof payload.notice === "string" ? `\n\nSource note: ${payload.notice}` : "";
+        persist(appendWorkspaceMessage(workspaceWithUserMessage, makeMessage("assistant", `${payload.content}${notice}`, source)));
+      }
       setRetryState(null);
     } catch (error) {
       const fallback = generateDeterministicAssistantReply(workspaceWithUserMessage, content);
       persist(appendWorkspaceMessage(workspaceWithUserMessage, makeMessage("assistant", `${fallback.content}\n\nSource note: The server chat route was unavailable, so this response was generated locally from the deterministic catalogue fallback.`, "deterministic-fallback")));
       setChatError(error instanceof Error ? `${error.message} Local fallback used.` : "The server chat route was unavailable. Local fallback used.");
-      setRetryState({ workspace: workspaceWithUserMessage, content });
+      setRetryState({ workspace: workspaceWithUserMessage, content, messageId: userMessage.id, serverBacked });
     } finally {
       setIsSending(false);
     }
@@ -150,15 +162,22 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace: retryState.workspace, message: retryState.content }),
+        body: JSON.stringify(retryState.serverBacked
+          ? { projectId, message: retryState.content, messageId: retryState.messageId }
+          : { workspace: retryState.workspace, message: retryState.content }),
       });
       const payload = await readResponse(response);
       if (!response.ok || typeof payload.content !== "string") {
         throw new Error(typeof payload.error === "string" ? payload.error : "The chat service returned an invalid response.");
       }
-      const source: WorkspaceMessage["source"] = payload.source === "model-assisted" ? "model-assisted" : "deterministic-fallback";
-      const notice = typeof payload.notice === "string" ? `\n\nSource note: ${payload.notice}` : "";
-      persist(appendWorkspaceMessage(retryState.workspace, makeMessage("assistant", `${payload.content}${notice}`, source)));
+      if (retryState.serverBacked && payload.workspace && typeof payload.workspace === "object") {
+        persist(ensureOperatingSystem(payload.workspace as ProjectWorkspace));
+        setChatNotice(typeof payload.notice === "string" ? payload.notice : null);
+      } else {
+        const source: WorkspaceMessage["source"] = payload.source === "model-assisted" ? "model-assisted" : "deterministic-fallback";
+        const notice = typeof payload.notice === "string" ? `\n\nSource note: ${payload.notice}` : "";
+        persist(appendWorkspaceMessage(retryState.workspace, makeMessage("assistant", `${payload.content}${notice}`, source)));
+      }
       setRetryState(null);
     } catch (error) {
       setChatError(error instanceof Error ? `${error.message} The local fallback remains available.` : "The retry failed. The local fallback remains available.");
@@ -195,9 +214,9 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
       const response = await fetch("/api/research", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify(serverBacked ? { projectId, query } : { query }),
       });
-      const payload = await readResponse(response) as unknown as Partial<ResearchResponse> & { error?: string };
+      const payload = await readResponse(response) as unknown as Partial<ResearchResponse> & { error?: string; workspace?: unknown };
       const message = typeof payload.message === "string" ? payload.message : payload.error ?? "Research was not available.";
       setResearchMessage(message);
       if (!response.ok || payload.status === "unavailable") {
@@ -211,15 +230,25 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
         return;
       }
 
-      const withFindings = appendResearchFindings(workspace, findings);
-      const citations = findings.slice(0, 5).map((finding) => ({
+      const citations = Array.isArray(payload.citations) ? payload.citations : findings.slice(0, 5).map((finding) => ({
         title: finding.title,
         url: finding.url,
         retrievedAt: finding.retrievedAt,
       }));
+      if (serverBacked && payload.workspace && typeof payload.workspace === "object") {
+        persist(ensureOperatingSystem(payload.workspace as ProjectWorkspace));
+        setResearchState("idle");
+        return;
+      }
+      const withFindings = appendResearchBundle(workspace, {
+        findings,
+        sources: Array.isArray(payload.sources) ? payload.sources : [],
+        evidence: Array.isArray(payload.evidence) ? payload.evidence : [],
+        claims: Array.isArray(payload.claims) ? payload.claims : [],
+      });
       const researchMessage = makeMessage(
         "assistant",
-        `${message}\n\nThese results are attached to the project as retrieved evidence. They are not treated as verified recommendations until you review the sources.`,
+        `${typeof payload.summary === "string" ? payload.summary : message}\n\nThese results are attached to the project as source-backed evidence. They are not treated as verified recommendations until you review the sources.`,
         "web-researched",
         citations,
       );
@@ -257,7 +286,7 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
             <h1 id="workspace-title">{workspace.name}</h1>
             <p className="workspace-hero-summary">{workspace.request.idea}</p>
           </div>
-          <div className="workspace-hero-meta"><span>Created {new Date(workspace.createdAt).toLocaleDateString()}</span><span>Updated {new Date(workspace.updatedAt).toLocaleDateString()}</span><span className="local-badge"><i aria-hidden="true" /> Saved in this browser</span></div>
+          <div className="workspace-hero-meta"><span>Created {new Date(workspace.createdAt).toLocaleDateString()}</span><span>Updated {new Date(workspace.updatedAt).toLocaleDateString()}</span><span className="local-badge"><i aria-hidden="true" /> {serverBacked ? "Server-owned + browser cache" : "Saved in this browser"}</span></div>
         </section>
 
         <WorkspaceBriefEditor key={workspace.updatedAt} request={workspace.request} onSave={saveBriefChanges} />
@@ -266,7 +295,7 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
 
         <div className="workspace-grid">
           <div className="workspace-primary-column">
-            <WorkspaceChat messages={workspace.messages} isSending={isSending} error={chatError} onSend={sendMessage} onRetry={retryState ? retryServerResponse : undefined} />
+            <WorkspaceChat messages={workspace.messages} isSending={isSending} error={chatError} notice={chatNotice} onSend={sendMessage} onRetry={retryState ? retryServerResponse : undefined} />
             <section className="workspace-memory-panel" aria-labelledby="memory-title">
               <div className="workspace-panel-heading"><div><p className="eyebrow">Structured memory</p><h2 id="memory-title">What this project currently knows.</h2></div><span className="memory-version">Plan v{workspace.memory.currentPlanVersion}</span></div>
               <div className="memory-grid">

@@ -11,6 +11,8 @@ type WorkspacePlanPanelProps = {
 
 export function WorkspacePlanPanel({ workspace, researchState, researchMessage, onResearch }: WorkspacePlanPanelProps) {
   const { plan } = workspace;
+  const researchEvidence = workspace.researchEvidence ?? [];
+  const researchClaims = workspace.researchClaims ?? [];
   return (
     <aside className="workspace-plan-panel" aria-labelledby="workspace-plan-title">
       <div className="workspace-plan-header">
@@ -54,13 +56,14 @@ export function WorkspacePlanPanel({ workspace, researchState, researchMessage, 
       </section>
 
       <section className="research-card">
-        <div className="plan-subsection-heading"><div><h3>Research evidence</h3><span>{workspace.researchFindings.length ? `${workspace.researchFindings.length} retrieved` : "None attached"}</span></div><span className="research-status-dot" aria-hidden="true" /></div>
-        <p>{researchMessage ?? "Live search is opt-in. Retrieved pages remain unverified evidence until you inspect them."}</p>
+        <div className="plan-subsection-heading"><div><h3>Research evidence</h3><span>{researchEvidence.length ? `${researchEvidence.length} evidence records` : "None attached"}</span></div><span className="research-status-dot" aria-hidden="true" /></div>
+        <p>{researchMessage ?? "Live search is opt-in. Search snippets and retrieved pages are source-backed evidence, not human verification."}</p>
         <button className="button button-secondary button-small" type="button" onClick={onResearch} disabled={researchState === "working"}>
           {researchState === "working" ? "Researching…" : "Research this direction"}
           {researchState !== "working" ? <span aria-hidden="true">↗</span> : null}
         </button>
-        {workspace.researchFindings.length ? <div className="research-results">{workspace.researchFindings.slice(-4).map((finding) => <a href={finding.url} target="_blank" rel="noreferrer" key={finding.id}><strong>{finding.title}</strong><small>{finding.snippet || finding.url}</small><span>{finding.verificationStatus} · {new Date(finding.retrievedAt).toLocaleDateString()}</span></a>)}</div> : null}
+        {workspace.researchFindings.length ? <div className="research-results">{workspace.researchFindings.slice(-4).map((finding) => <a href={finding.url} target="_blank" rel="noreferrer" key={finding.id}><strong>{finding.title}</strong><small>{finding.snippet || finding.url}</small><span>{finding.pageRetrieved ? "public page retrieved" : "search snippet only"} · {finding.verificationStatus} · {new Date(finding.retrievedAt).toLocaleDateString()}</span>{finding.retrievalError ? <em>{finding.retrievalError}</em> : null}</a>)}</div> : null}
+        {researchClaims.length ? <div className="research-claims"><strong>Evidence-backed claims</strong><ul>{researchClaims.slice(-4).map((claim) => <li key={claim.id}><span>{claim.supportStatus}</span> {claim.text}</li>)}</ul></div> : null}
       </section>
 
       <section className="plan-subsection compact-plan-section">

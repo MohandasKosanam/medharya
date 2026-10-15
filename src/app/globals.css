@@ -2226,6 +2226,22 @@ input[aria-invalid="true"] {
   color: var(--cyan);
 }
 
+.message-citations small {
+  margin-left: 5px;
+  color: var(--ink-subtle);
+  font-family: var(--font-mono), monospace;
+  font-size: 0.48rem;
+}
+
+.workspace-inline-note {
+  margin: 0 25px 10px;
+  border-left: 2px solid var(--cyan);
+  padding-left: 9px;
+  color: var(--ink-subtle);
+  font-size: 0.6rem;
+  line-height: 1.45;
+}
+
 .chat-error {
   margin: 0 25px 10px;
 }
@@ -2496,6 +2512,48 @@ input[aria-invalid="true"] {
   color: var(--cyan);
   font-family: var(--font-mono), monospace;
   font-size: 0.49rem;
+}
+
+.research-results em {
+  overflow: hidden;
+  color: #d5a8a8;
+  font-size: 0.51rem;
+  font-style: normal;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-claims {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.research-claims > strong {
+  color: var(--ink-muted);
+  font-size: 0.57rem;
+  font-weight: 600;
+}
+
+.research-claims ul {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 14px;
+}
+
+.research-claims li {
+  color: var(--ink-subtle);
+  font-size: 0.55rem;
+  line-height: 1.4;
+}
+
+.research-claims li span {
+  color: var(--cyan);
+  font-family: var(--font-mono), monospace;
+  font-size: 0.48rem;
+  text-transform: uppercase;
 }
 
 .plan-sources {
