@@ -12,6 +12,7 @@ import {
   getMedharyaAlphaHealthStatus,
   toMedharyaAlphaProviderStatus,
 } from "./alpha";
+import { getConfiguredOllamaProvider, getOllamaProviderStatus } from "./ollama";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -342,6 +343,9 @@ export function selectModelProvider(
   if (requestedProvider === "alpha" || requestedProvider === "medharya-alpha") {
     return getConfiguredMedharyaAlphaProvider({ env, request });
   }
+  if (requestedProvider === "ollama") {
+    return getConfiguredOllamaProvider({ env, request });
+  }
   if (requestedProvider === "disabled" || requestedProvider === "none" || requestedProvider === "off") return null;
 
   const apiKey = configuredValue(env.MEDHARYA_AI_API_KEY);
@@ -377,6 +381,9 @@ export function selectedModelProviderStatus(
   const requestedProvider = env.MEDHARYA_AI_PROVIDER?.trim().toLowerCase();
   if (requestedProvider === "alpha" || requestedProvider === "medharya-alpha") {
     return toMedharyaAlphaProviderStatus(getMedharyaAlphaHealthStatus({ env }), { env });
+  }
+  if (requestedProvider === "ollama") {
+    return getOllamaProviderStatus({ env });
   }
   if (requestedProvider === "disabled" || requestedProvider === "none" || requestedProvider === "off") {
     return {

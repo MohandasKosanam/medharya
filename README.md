@@ -201,6 +201,95 @@ Express entry point; the App Router handlers are the current Node.js backend.
 Set `MEDHARYA_AI_PROVIDER=alpha` to select Medharya Alpha. Leave it unset or
 use `openai-compatible` to preserve the existing provider path.
 
+Set `MEDHARYA_AI_PROVIDER=ollama` to use the locally installed Ollama model.
+The browser still calls only Medharya's `/api/chat` route; Ollama is contacted
+server-side over loopback.
+
+### Local Ollama provider
+
+The local provider targets the installed `qwen3:4b` model through Ollama's
+non-streaming chat API:
+
+```dotenv
+MEDHARYA_AI_PROVIDER=ollama
+MEDHARYA_OLLAMA_BASE_URL=http://127.0.0.1:11434
+MEDHARYA_OLLAMA_MODEL=qwen3:4b
+MEDHARYA_OLLAMA_TIMEOUT_MS=30000
+```
+
+`MEDHARYA_OLLAMA_BASE_URL` is the Ollama server root. The adapter sends the
+request to `<base-url>/api/chat`, keeps `stream` and `think` disabled, bounds
+generation to 900 tokens, and accepts only the visible
+`message.content` field. Any `message.thinking` field or `<think>...</think>`
+block in content is removed before the response reaches the frontend.
+
+For safety, the adapter accepts only loopback HTTP URLs (`localhost`,
+`127.0.0.1`, or `::1`) without credentials, query strings, or fragments. It
+does not send an API key to Ollama. Provider failures preserve the existing
+deterministic fallback and are reported as timeout, transient-error, or
+invalid-response states.
+
+The Ollama status route reports `configured` without making a separate health
+request. After a successful chat, the existing response status becomes
+`ready`. This keeps the current `/api/ai/status` and `/api/chat` contracts
+unchanged.
+
+On Windows PowerShell, start Ollama if it is not already running, confirm the
+model is present, then start Medharya:
+
+```powershell
+ollama serve
+ollama list
+$env:MEDHARYA_AI_PROVIDER = "ollama"
+$env:MEDHARYA_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+$env:MEDHARYA_OLLAMA_MODEL = "qwen3:4b"
+$env:MEDHARYA_OLLAMA_TIMEOUT_MS = "30000"
+$env:MEDHARYA_DISABLE_EXTERNAL_PROVIDERS = "0"
+npm run dev
+```
+
+If the Ollama desktop service is already running, do not start a second
+`ollama serve` process. Do not expose port `11434` publicly.
+
+To verify a real frontend request, open `http://localhost:3000`, create or
+open an account-backed workspace, and send a chat message. The authenticated
+`POST /api/chat` response should contain:
+
+```json
+{
+  "source": "model-assisted",
+  "provider": "ollama",
+  "model": "qwen3:4b",
+  "contextSource": "server-owned",
+  "providerStatus": { "state": "ready" }
+}
+```
+
+The browser continues to use the existing response shape and persistence path;
+the local Ollama service is never called directly by the browser.
+
+The mocked adapter regression suite is:
+
+```bash
+npm run test:ollama-adapter
+```
+
+It validates request bounds, thinking-content removal, usage normalization,
+malformed output, timeout, unavailable-service fallback, status reporting, and
+server-owned persistence without contacting the real Ollama daemon. A real
+frontend/model request is established only by the manual flow above or the
+opt-in live smoke command:
+
+```powershell
+npm run test:ollama:live
+```
+
+`test:ollama:live` starts a temporary production Medharya server, creates a
+temporary account/project, sends one real `/api/chat` request to the configured
+loopback Ollama service, verifies the model-assisted response and persistence,
+prints metadata only, and removes its temporary server data. It does not use a
+mock and does not start training.
+
 ### Medharya Alpha FastAPI provider
 
 The dedicated Alpha adapter targets a configurable service with these defaults:
