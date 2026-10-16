@@ -5,3 +5,11 @@ node_modules
 !.env.example
 npm-debug.log*
 *.tsbuildinfo
+.venv-qlora
+models
+training/.hf-cache
+training/data
+training/checkpoints
+training/adapters
+training/outputs
+training/logs

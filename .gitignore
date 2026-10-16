@@ -43,3 +43,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local QLoRA environment and model/training artifacts
+/.venv-qlora/
+/models/
+/training/.hf-cache/
+/training/data/
+/training/checkpoints/
+/training/adapters/
+/training/outputs/
+/training/logs/
+/training/__pycache__/
