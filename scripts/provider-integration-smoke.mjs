@@ -80,6 +80,7 @@ const child = spawn(childCommand, childArgs, {
   cwd: process.cwd(),
   env: {
     ...process.env,
+    MEDHARYA_AI_PROVIDER: "openai-compatible",
     MEDHARYA_AI_API_KEY: "mock-key",
     MEDHARYA_AI_MODEL: "mock-model",
     MEDHARYA_AI_BASE_URL: `http://127.0.0.1:${providerPort}/v1`,

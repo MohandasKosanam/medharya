@@ -416,6 +416,37 @@ transient-error, or invalid-response states. The adapter retries bounded
 transient failures once, then falls back to the deterministic catalogue
 response with an explicit notice.
 
+### Runpod OpenAI-compatible worker
+
+If the selected Runpod worker exposes the OpenAI-compatible chat-completions
+contract, use the existing provider path; no Runpod-specific adapter or client
+bundle code is required. Configure these variables in the server or deployment
+secret manager:
+
+```dotenv
+MEDHARYA_AI_PROVIDER=openai-compatible
+MEDHARYA_AI_API_KEY=replace-me
+MEDHARYA_AI_MODEL=replace-me
+MEDHARYA_AI_BASE_URL=https://your-worker-api.example/v1
+MEDHARYA_AI_TIMEOUT_MS=45000
+```
+
+`MEDHARYA_AI_BASE_URL` must be the worker's documented API root or its full
+`/chat/completions` URL. The adapter sends a server-side Bearer credential and
+the standard `model`, `temperature`, `max_tokens`, and `messages` fields. It
+accepts `choices[0].message.content` (or the compatible `choices[0].text`)
+and optional token usage. A Runpod dashboard URL, endpoint ID without an API
+URL, or a worker that only exposes raw Serverless `/run` and polling endpoints
+does not satisfy this integration contract.
+
+The existing bounded timeout, retry, prompt limits, safe error normalization,
+and deterministic fallback apply unchanged. `npm run test:provider` verifies
+this contract against a local mock only; it does not prove that a Runpod worker
+is deployed or reachable. A genuine Runpod integration is established only
+after these variables are configured in the running Medharya backend and an
+authenticated `/api/chat` request returns `source: "model-assisted"` with
+`provider: "openai-compatible"`.
+
 ### Live research provider
 
 Live search is implemented through the Brave Search API adapter:
@@ -547,14 +578,20 @@ recommendation and conversation contracts.
    adapter as separate artifacts on a persistent, authenticated GPU service.
    The service must expose the `/health` and `/chat` contract documented above;
    Colab or a temporary tunnel is not a production deployment.
-4. Configure provider keys and Alpha service variables only in the deployment
+4. For a Runpod worker that exposes the OpenAI-compatible contract, configure
+   `MEDHARYA_AI_PROVIDER`, `MEDHARYA_AI_API_KEY`, `MEDHARYA_AI_MODEL`, and
+   `MEDHARYA_AI_BASE_URL` only in the deployment secret manager. Verify the
+   worker's HTTPS URL, Bearer authentication, model name, and response schema
+   before enabling it. A raw Runpod Serverless `/run` endpoint requires a
+   separate adapter and is not enabled by this repository.
+5. Configure Alpha provider keys and service variables only in the deployment
    secret manager. Use `MEDHARYA_AI_PROVIDER=alpha` only after the service
    health schema, model identity, adapter identity, and HTTPS/auth path are
    verified.
-5. Run `npm run test` before deploying.
-6. Run `npm run build` and start with `npm start`, or deploy the Docker image.
-7. Run `MEDHARYA_BASE_URL=<backend> npm run test:alpha:live` only after the
+6. Run `npm run test` before deploying.
+7. Run `npm run build` and start with `npm start`, or deploy the Docker image.
+8. Run `MEDHARYA_BASE_URL=<backend> npm run test:alpha:live` only after the
    configured Alpha service is reachable. This is the evidence required for a
    genuine integration response; mocked tests do not substitute for it.
-8. Keep the provider and research limits, data retention, and cost terms under
+9. Keep the provider and research limits, data retention, and cost terms under
    review before exposing the prototype to real user data.
