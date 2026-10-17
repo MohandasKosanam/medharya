@@ -57,6 +57,121 @@ if (signup.response.status !== 201 || typeof signup.payload?.project?.id !== "st
 }
 const projectId = signup.payload.project.id;
 
+const operatingSystem = structuredClone(signup.payload.project.operatingSystem);
+const parentBranch = operatingSystem?.branches?.find((branch) => branch.template === "product-strategy") ?? operatingSystem?.branches?.[0];
+if (!parentBranch || !Array.isArray(operatingSystem?.branches) || !Array.isArray(operatingSystem?.edges)) {
+  throw new Error("Server-owned operating-system records were not initialized.");
+}
+operatingSystem.viewport = { zoom: 1.15, pan: { x: 42, y: -18 } };
+const nestedBranch = {
+  id: `${projectId}-nested-smoke`,
+  workspaceId: projectId,
+  name: "Nested smoke branch",
+  template: "development-architecture",
+  description: "A nested branch used by the backend smoke check.",
+  status: "active",
+  provenance: "user",
+  approvalStatus: "pending",
+  parentBranchId: parentBranch.id,
+  canvasPosition: { x: 318, y: 214 },
+  messages: [],
+  requirements: ["Keep the nested context explicit."],
+  researchFindingIds: [],
+  decisionIds: [],
+  taskIds: [],
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+};
+operatingSystem.branches.push(nestedBranch);
+operatingSystem.edges.push({
+  id: `${projectId}-nested-related-smoke`,
+  fromBranchId: nestedBranch.id,
+  toBranchId: parentBranch.id,
+  relationship: "related-to",
+  status: "active",
+  provenance: "user",
+  approvalStatus: "pending",
+  rationale: "Smoke relationship",
+});
+const operatingSystemPatch = await request(`/api/projects/${projectId}/operating-system`, {
+  method: "PATCH",
+  body: JSON.stringify({ operatingSystem }),
+});
+if (operatingSystemPatch.response.status !== 200 || operatingSystemPatch.payload.project?.operatingSystem?.viewport?.zoom !== 1.15 || operatingSystemPatch.payload.project?.operatingSystem?.viewport?.pan?.x !== 42 || !operatingSystemPatch.payload.project?.operatingSystem?.branches?.some((branch) => branch.id === nestedBranch.id && branch.parentBranchId === parentBranch.id && branch.canvasPosition?.x === 318 && branch.canvasPosition?.y === 214)) {
+  throw new Error("Nested branch persistence check failed.");
+}
+
+const persistedOperatingSystem = operatingSystemPatch.payload.project.operatingSystem;
+const invalidViewport = structuredClone(persistedOperatingSystem);
+invalidViewport.viewport = { zoom: 99, pan: { x: 0, y: 0 } };
+const invalidViewportUpdate = await request(`/api/projects/${projectId}/operating-system`, {
+  method: "PATCH",
+  body: JSON.stringify({ operatingSystem: invalidViewport }),
+});
+if (invalidViewportUpdate.response.status !== 400) {
+  throw new Error("Invalid canvas viewport validation check failed.");
+}
+
+const invalidPosition = structuredClone(persistedOperatingSystem);
+invalidPosition.branches.find((branch) => branch.id === nestedBranch.id).canvasPosition = { x: 1_000_001, y: 0 };
+const invalidPositionUpdate = await request(`/api/projects/${projectId}/operating-system`, {
+  method: "PATCH",
+  body: JSON.stringify({ operatingSystem: invalidPosition }),
+});
+if (invalidPositionUpdate.response.status !== 400) {
+  throw new Error("Invalid canvas position validation check failed.");
+}
+
+const danglingEdge = structuredClone(persistedOperatingSystem);
+danglingEdge.edges.push({
+  id: `${projectId}-dangling-edge-smoke`,
+  fromBranchId: nestedBranch.id,
+  toBranchId: `${projectId}-missing-branch`,
+  relationship: "related-to",
+  status: "active",
+  provenance: "user",
+  approvalStatus: "pending",
+  rationale: "Must be rejected",
+});
+const danglingEdgeUpdate = await request(`/api/projects/${projectId}/operating-system`, {
+  method: "PATCH",
+  body: JSON.stringify({ operatingSystem: danglingEdge }),
+});
+if (danglingEdgeUpdate.response.status !== 400) {
+  throw new Error("Dangling branch edge validation check failed.");
+}
+
+const cyclicBranches = structuredClone(persistedOperatingSystem);
+cyclicBranches.branches.find((branch) => branch.id === parentBranch.id).parentBranchId = nestedBranch.id;
+const cyclicBranchUpdate = await request(`/api/projects/${projectId}/operating-system`, {
+  method: "PATCH",
+  body: JSON.stringify({ operatingSystem: cyclicBranches }),
+});
+if (cyclicBranchUpdate.response.status !== 400) {
+  throw new Error("Nested branch cycle validation check failed.");
+}
+
+const legacyViewport = structuredClone(persistedOperatingSystem);
+delete legacyViewport.viewport;
+legacyViewport.canvasViewport = { zoom: 1.2, pan: { x: -12, y: 8 } };
+const legacyViewportUpdate = await request(`/api/projects/${projectId}/operating-system`, {
+  method: "PATCH",
+  body: JSON.stringify({ operatingSystem: legacyViewport }),
+});
+if (legacyViewportUpdate.response.status !== 200 || legacyViewportUpdate.payload.project?.operatingSystem?.viewport?.zoom !== 1.2 || legacyViewportUpdate.payload.project?.operatingSystem?.canvasViewport !== undefined) {
+  throw new Error("Legacy canvas viewport migration check failed.");
+}
+
+const crossProjectBranch = structuredClone(operatingSystemPatch.payload.project.operatingSystem);
+crossProjectBranch.branches.find((branch) => branch.id === nestedBranch.id).workspaceId = "another-project";
+const crossProjectUpdate = await request(`/api/projects/${projectId}/operating-system`, {
+  method: "PATCH",
+  body: JSON.stringify({ operatingSystem: crossProjectBranch }),
+});
+if (crossProjectUpdate.response.status !== 400) {
+  throw new Error("Cross-project nested branch validation check failed.");
+}
+
 const aiStatus = await request(`/api/ai/status?projectId=${encodeURIComponent(projectId)}`);
 if (aiStatus.response.status !== 200 || aiStatus.payload?.providerStatus?.state !== "unavailable") {
   throw new Error("Unavailable-provider status check failed.");
@@ -73,6 +188,40 @@ if (!chat.payload.workspace.messages.some((message) => message.id === "intellige
   throw new Error("Server-owned chat message was not persisted.");
 }
 
+const concurrentMessageId = "intelligence-smoke-concurrent-message";
+const [concurrentChatA, concurrentChatB] = await Promise.all([
+  request("/api/chat", {
+    method: "POST",
+    body: JSON.stringify({ projectId, message: "Check this concurrent retry.", messageId: concurrentMessageId }),
+  }),
+  request("/api/chat", {
+    method: "POST",
+    body: JSON.stringify({ projectId, message: "Check this concurrent retry.", messageId: concurrentMessageId }),
+  }),
+]);
+if (concurrentChatA.response.status !== 200 || concurrentChatB.response.status !== 200) {
+  throw new Error("Concurrent chat retry requests were not accepted.");
+}
+const afterConcurrentChat = await request(`/api/projects/${projectId}`);
+if (
+  afterConcurrentChat.response.status !== 200 ||
+  afterConcurrentChat.payload.project?.messages?.filter((message) => message.id === concurrentMessageId).length !== 1
+) {
+  throw new Error("Concurrent chat retry idempotency check failed.");
+}
+
+const branchChat = await request("/api/chat", {
+  method: "POST",
+  body: JSON.stringify({ projectId, branchId: nestedBranch.id, message: "What is the current availability of the nested branch stack?", messageId: "intelligence-smoke-branch-message" }),
+});
+if (branchChat.response.status !== 200 || branchChat.payload?.contextSource !== "server-owned" || !branchChat.payload?.notice?.includes("Automatic research")) {
+  throw new Error("Server-owned branch chat routing check failed.");
+}
+const persistedNestedBranch = branchChat.payload.workspace?.operatingSystem?.branches?.find((branch) => branch.id === nestedBranch.id);
+if (!persistedNestedBranch?.messages?.some((message) => message.id === "intelligence-smoke-branch-message")) {
+  throw new Error("Server-owned branch chat persistence check failed.");
+}
+
 const idempotentChat = await request("/api/chat", {
   method: "POST",
   body: JSON.stringify({ projectId, message: "What should be checked before committing to this direction?", messageId: "intelligence-smoke-message" }),
@@ -83,13 +232,50 @@ if (idempotentChat.response.status !== 200 || idempotentChat.payload?.workspace?
 
 const research = await request("/api/research", {
   method: "POST",
-  body: JSON.stringify({ projectId, query: "Next.js official documentation" }),
+  body: JSON.stringify({ projectId, branchId: nestedBranch.id, query: "Next.js official documentation" }),
 });
 if (![200, 502, 503].includes(research.response.status)) {
   throw new Error("Server-owned research availability check failed.");
 }
 if (research.response.status === 200 && research.payload?.contextSource !== "server-owned") {
   throw new Error("Available research did not report server-owned context.");
+}
+if (research.response.status === 200) {
+  const branchAfterResearch = research.payload.workspace?.operatingSystem?.branches?.find((branch) => branch.id === nestedBranch.id);
+  const findingIds = research.payload.findings?.map((finding) => finding.id) ?? [];
+  if (!branchAfterResearch || findingIds.some((findingId) => !branchAfterResearch.researchFindingIds.includes(findingId))) {
+    throw new Error("Branch research references were not persisted.");
+  }
+}
+
+const deleteSourceOperatingSystem = structuredClone(
+  research.payload.workspace?.operatingSystem ?? persistedOperatingSystem,
+);
+deleteSourceOperatingSystem.branches = deleteSourceOperatingSystem.branches.filter(
+  (branch) => branch.id !== nestedBranch.id,
+);
+deleteSourceOperatingSystem.edges = deleteSourceOperatingSystem.edges.filter(
+  (edge) => edge.fromBranchId !== nestedBranch.id && edge.toBranchId !== nestedBranch.id,
+);
+const deletedBranch = await request(`/api/projects/${projectId}/operating-system`, {
+  method: "PATCH",
+  body: JSON.stringify({
+    operatingSystem: deleteSourceOperatingSystem,
+    deletedBranchIds: [nestedBranch.id],
+  }),
+});
+if (
+  deletedBranch.response.status !== 200 ||
+  deletedBranch.payload.project?.operatingSystem?.branches?.some((branch) => branch.id === nestedBranch.id)
+) {
+  throw new Error("Branch deletion persistence check failed.");
+}
+const reloadedAfterBranchDelete = await request(`/api/projects/${projectId}`);
+if (
+  reloadedAfterBranchDelete.response.status !== 200 ||
+  reloadedAfterBranchDelete.payload.project?.operatingSystem?.branches?.some((branch) => branch.id === nestedBranch.id)
+) {
+  throw new Error("Deleted branch was resurrected by the server merge.");
 }
 
 await request("/api/auth/logout", { method: "POST" });

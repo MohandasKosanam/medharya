@@ -1,5 +1,5 @@
 import type { ProjectRequest } from "@/types/project";
-import type { ResearchClaim, ResearchEvidence, ResearchFinding, ResearchSource } from "@/types/research";
+import type { ResearchAssessment, ResearchClaim, ResearchEvidence, ResearchFinding, ResearchSource } from "@/types/research";
 import type { SolutionPlan } from "@/types/solution";
 import type { ProjectOperatingSystem } from "@/types/operating-system";
 
@@ -49,6 +49,7 @@ export interface ProjectWorkspace {
   researchSources?: ResearchSource[];
   researchEvidence?: ResearchEvidence[];
   researchClaims?: ResearchClaim[];
+  researchAssessment?: ResearchAssessment;
   plan: SolutionPlan;
   /** Optional for backwards compatibility with Phase 2 browser records. */
   operatingSystem?: ProjectOperatingSystem;

@@ -32,6 +32,14 @@ function delay(milliseconds) {
 }
 
 ollamaServer.on("request", async (request, response) => {
+  if (request.url === "/api/tags" && request.method === "GET") {
+    if (mode === "stopped") {
+      json(response, 503, { error: "mock Ollama stopped" });
+      return;
+    }
+    json(response, 200, { models: mode === "missing-model" ? [] : [{ name: model }] });
+    return;
+  }
   if (request.url !== "/api/chat" || request.method !== "POST") {
     json(response, 404, { error: "not found" });
     return;
@@ -52,6 +60,10 @@ ollamaServer.on("request", async (request, response) => {
     }
     if (mode === "unavailable") {
       json(response, 503, { error: "mock Ollama unavailable" });
+      return;
+    }
+    if (mode === "missing-model") {
+      json(response, 404, { error: `model '${model}' not found` });
       return;
     }
     if (mode === "malformed") {
@@ -184,12 +196,32 @@ try {
   const projectId = signup.payload.project?.id;
   assert(signup.response.status === 201 && typeof projectId === "string" && cookie, "Ollama smoke account setup failed.");
 
+  const requestsBeforeStatus = observedRequests.length;
   const status = await request(`/api/ai/status?projectId=${encodeURIComponent(projectId)}`);
   assert(status.response.status === 200, "Ollama status route did not return HTTP 200.");
   assert(status.payload.providerStatus?.provider === "ollama", "Ollama status did not identify the provider.");
-  assert(status.payload.providerStatus?.state === "configured", "Ollama status was not configured.");
+  assert(status.payload.providerStatus?.state === "ready", "Ollama status was not ready.");
   assert(status.payload.providerStatus?.model === model, "Ollama status returned the wrong model.");
-  assert(observedRequests.length === 0, "Ollama status unexpectedly called the chat endpoint.");
+  assert(observedRequests.length === requestsBeforeStatus, "Ollama status unexpectedly called the chat endpoint.");
+
+  mode = "missing-model";
+  const missingModelStatus = await request(`/api/ai/status?projectId=${encodeURIComponent(projectId)}`);
+  assert(missingModelStatus.response.status === 200, "Ollama missing-model status did not return HTTP 200.");
+  assert(missingModelStatus.payload.providerStatus?.state === "unavailable", "Ollama missing-model status was not unavailable.");
+  assert(missingModelStatus.payload.providerStatus?.reason === "model-missing", "Ollama missing-model status returned the wrong reason.");
+
+  const missingModelChat = await request("/api/chat", {
+    method: "POST",
+    body: JSON.stringify({ projectId, message: "missing Ollama model", messageId: "ollama-missing-model" }),
+  });
+  assert(missingModelChat.response.status === 200 && missingModelChat.payload.source === "deterministic-fallback", "Ollama missing-model chat did not fall back.");
+  assert(missingModelChat.payload.providerStatus?.reason === "model-missing", "Ollama missing-model chat returned the wrong reason.");
+
+  mode = "stopped";
+  const stoppedStatus = await request(`/api/ai/status?projectId=${encodeURIComponent(projectId)}`);
+  assert(stoppedStatus.response.status === 200, "Ollama stopped status did not return HTTP 200.");
+  assert(stoppedStatus.payload.providerStatus?.state === "unavailable", "Ollama stopped status was not unavailable.");
+  assert(stoppedStatus.payload.providerStatus?.reason === "transient-error", "Ollama stopped status returned the wrong reason.");
 
   mode = "success";
   const success = await request("/api/chat", {

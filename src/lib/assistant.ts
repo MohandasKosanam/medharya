@@ -20,11 +20,29 @@ function toolNames(workspace: ProjectWorkspace, category?: string) {
     .join(", ");
 }
 
+function deterministicGreeting(message: string) {
+  const normalized = message.trim().toLowerCase().replace(/[!?.]+$/, "");
+  return {
+    hi: "Hi! How can I help with your project today?",
+    hello: "Hello! How can I help with your project today?",
+    hey: "Hey! How can I help with your project today?",
+    "good morning": "Good morning! How can I help with your project today?",
+  }[normalized];
+}
+
 function deterministicAnswer(workspace: ProjectWorkspace, message: string): AssistantReply {
   const lowerMessage = message.toLowerCase();
+  const greeting = deterministicGreeting(message);
   const database = toolNames(workspace, "database") || "the selected database";
   const frontend = toolNames(workspace, "frontend") || "the selected frontend";
   const hosting = toolNames(workspace, "hosting") || "an online host still to be selected";
+
+  if (greeting) {
+    return {
+      source: "deterministic-fallback",
+      content: greeting,
+    };
+  }
 
   if (includesAny(lowerMessage, ["why", "reason"]) && includesAny(lowerMessage, ["database", "db", "storage"])) {
     return {

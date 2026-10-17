@@ -8,6 +8,13 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 import { applyWorkspaceRequestPatch, createProjectWorkspace } from "@/lib/workspace";
+import { generateServerSolutionPlan } from "@/lib/server/recommendations";
+import {
+  ensureOperatingSystem,
+  isValidCanvasPosition,
+  isValidCanvasViewport,
+  removeBranchTree,
+} from "@/lib/operating-system";
 import { isProjectRequest } from "@/lib/project-request";
 import {
   DEPLOYMENT_PREFERENCES,
@@ -313,6 +320,24 @@ function projectFromDraft(draft: AnonymousIdeaDraft, ownerUserId: string): Owned
   };
 }
 
+async function enhanceOwnedProjectPlan(project: OwnedProject) {
+  try {
+    const result = await generateServerSolutionPlan(project.workspace.request, project.workspace.plan.version);
+    if (!result.usedFallback) {
+      project.workspace = {
+        ...project.workspace,
+        plan: result.plan,
+        updatedAt: now(),
+      };
+      project.updatedAt = project.workspace.updatedAt;
+    }
+  } catch {
+    // Account/project creation must retain the deterministic plan if a model
+    // provider fails unexpectedly; the plan provenance remains truthful.
+  }
+  return project;
+}
+
 export function parseProjectRequestInput(value: unknown): ProjectRequest | null {
   if (!isRecord(value)) return null;
   if ("request" in value) return parseProjectRequestInput(value.request);
@@ -474,7 +499,7 @@ export async function registerUser(input: SignupInput) {
 
     let project: OwnedProject | null = null;
     if (draft) {
-      project = projectFromDraft(draft, user.id);
+      project = await enhanceOwnedProjectPlan(projectFromDraft(draft, user.id));
       database.projects.push(project);
       draft.attachedUserId = user.id;
       draft.attachedProjectId = project.id;
@@ -565,7 +590,10 @@ export function clearSessionCookie(cookieStore: CookieStoreLike) {
 
 export async function getOwnedProject(projectId: string, ownerUserId: string) {
   const database = await readServerDatabase();
-  return database.projects.find((project) => project.id === projectId && project.ownerUserId === ownerUserId) || null;
+  const project = database.projects.find((candidate) => candidate.id === projectId && candidate.ownerUserId === ownerUserId);
+  return project
+    ? { ...project, workspace: ensureOperatingSystem(project.workspace) }
+    : null;
 }
 
 /**
@@ -581,16 +609,22 @@ export async function updateOwnedProjectWorkspace(
   return mutateDatabase((database) => {
     const project = database.projects.find((candidate) => candidate.id === projectId && candidate.ownerUserId === ownerUserId);
     if (!project) return null;
-    const nextWorkspace = updater(project.workspace);
+    const candidateWorkspace = updater(project.workspace);
+    const nextWorkspace = ensureOperatingSystem(candidateWorkspace);
+    const legacyResearchFindingIds = legacyResearchFindingIdsFor(project.workspace);
+    const operatingSystemError = nextWorkspace.operatingSystem
+      ? operatingSystemValidationError(nextWorkspace.operatingSystem, projectId, nextWorkspace, legacyResearchFindingIds)
+      : null;
     if (
       nextWorkspace.id !== project.id ||
       nextWorkspace.messages.length > 100 ||
       nextWorkspace.researchFindings.length > 100 ||
       (nextWorkspace.researchSources?.length ?? 0) > 150 ||
       (nextWorkspace.researchEvidence?.length ?? 0) > 150 ||
-      (nextWorkspace.researchClaims?.length ?? 0) > 150
+      (nextWorkspace.researchClaims?.length ?? 0) > 150 ||
+      operatingSystemError
     ) {
-      throw new RepositoryError("invalid-input", "The generated project update exceeded a safe size limit.");
+      throw new RepositoryError("invalid-input", operatingSystemError ?? "The generated project update exceeded a safe size limit.");
     }
     project.workspace = nextWorkspace;
     project.updatedAt = nextWorkspace.updatedAt;
@@ -608,23 +642,216 @@ export async function updateOwnedProject(projectId: string, ownerUserId: string,
   });
 }
 
+const BRANCH_EDGE_RELATIONSHIPS = new Set(["depends-on", "informs", "blocks", "related-to"]);
+
+function isBranchShape(value: unknown) {
+  if (!isRecord(value)) return false;
+  return Boolean(
+    isNonEmptyString(value.id, 200) &&
+      isNonEmptyString(value.workspaceId, 200) &&
+      isNonEmptyString(value.name, 160) &&
+      (!('messages' in value) || Array.isArray(value.messages)) &&
+      (!('taskIds' in value) || Array.isArray(value.taskIds)) &&
+      (!('parentBranchId' in value) || value.parentBranchId === undefined || isNonEmptyString(value.parentBranchId, 200)) &&
+      (!('canvasPosition' in value) || value.canvasPosition === undefined || isValidCanvasPosition(value.canvasPosition)) &&
+      (!('requirements' in value) || Array.isArray(value.requirements)) &&
+      (!('researchFindingIds' in value) || Array.isArray(value.researchFindingIds)) &&
+      (!('decisionIds' in value) || Array.isArray(value.decisionIds))
+  );
+}
+
+function isEdgeShape(value: unknown) {
+  if (!isRecord(value)) return false;
+  return Boolean(
+    isNonEmptyString(value.id, 200) &&
+      isNonEmptyString(value.fromBranchId, 200) &&
+      isNonEmptyString(value.toBranchId, 200) &&
+      typeof value.relationship === "string" &&
+      BRANCH_EDGE_RELATIONSHIPS.has(value.relationship) &&
+      (value.status === "active" || value.status === "archived")
+  );
+}
+
 function isOperatingSystemShape(value: unknown): value is ProjectOperatingSystem {
   if (!isRecord(value)) return false;
   return Boolean(
-    Array.isArray(value.branches) &&
+      Array.isArray(value.branches) &&
       value.branches.length <= 100 &&
-      value.branches.every((branch) => isRecord(branch) && isNonEmptyString(branch.id, 200) && isNonEmptyString(branch.workspaceId, 200) && isNonEmptyString(branch.name, 160) && Array.isArray(branch.messages) && Array.isArray(branch.taskIds)) &&
+      value.branches.every(isBranchShape) &&
       Array.isArray(value.edges) && value.edges.length <= 300 &&
+      value.edges.every(isEdgeShape) &&
+      (!('viewport' in value) || value.viewport === undefined || isValidCanvasViewport(value.viewport)) &&
+      (!('canvasViewport' in value) || value.canvasViewport === undefined || isValidCanvasViewport(value.canvasViewport)) &&
       Array.isArray(value.tasks) && value.tasks.length <= 500 &&
       value.tasks.every((task) => isRecord(task) && isNonEmptyString(task.id, 200) && isNonEmptyString(task.title, 240) && isNonEmptyString(task.branchId, 200) && isNonEmptyString(task.status, 40)) &&
       Array.isArray(value.milestones) && value.milestones.length <= 100 &&
+      value.milestones.every((milestone) => isRecord(milestone) && isNonEmptyString(milestone.id, 200) && isNonEmptyString(milestone.branchId, 200)) &&
       Array.isArray(value.automations) && value.automations.length <= 50 &&
       Array.isArray(value.automationRuns) && value.automationRuns.length <= 200 &&
       Array.isArray(value.discoveryQuestions) && value.discoveryQuestions.length <= 100 &&
       Array.isArray(value.discoveryAnswers) && value.discoveryAnswers.length <= 200 &&
       Array.isArray(value.decisions) && value.decisions.length <= 200 &&
+      value.decisions.every((decision) => isRecord(decision) && Array.isArray(decision.relatedBranchIds)) &&
       isRecord(value.preferences) && isNonEmptyString(value.preferences.id, 200),
   );
+}
+
+function operatingSystemValidationError(
+  operatingSystem: ProjectOperatingSystem,
+  projectId: string,
+  workspace?: ProjectWorkspace,
+  legacyResearchFindingIds = new Set<string>(),
+) {
+  if (!isOperatingSystemShape(operatingSystem)) return "A valid operating-system update is required.";
+  if (operatingSystem.viewport !== undefined && !isValidCanvasViewport(operatingSystem.viewport)) {
+    return "Canvas viewport values must be finite numbers within safe bounds.";
+  }
+  if (operatingSystem.canvasViewport !== undefined && !isValidCanvasViewport(operatingSystem.canvasViewport)) {
+    return "Canvas viewport values must be finite numbers within safe bounds.";
+  }
+
+  const branchIds = new Set<string>();
+  for (const branch of operatingSystem.branches) {
+    if (branch.workspaceId !== projectId) return "Branch records must belong to the project being updated.";
+    if (branchIds.has(branch.id)) return "Branch ids must be unique within a project.";
+    if (branch.canvasPosition !== undefined && !isValidCanvasPosition(branch.canvasPosition)) {
+      return "Canvas branch positions must be finite numbers within safe bounds.";
+    }
+    branchIds.add(branch.id);
+  }
+
+  for (const branch of operatingSystem.branches) {
+    const parent = branch.parentBranchId
+      ? operatingSystem.branches.find((candidate) => candidate.id === branch.parentBranchId)
+      : undefined;
+    if (branch.parentBranchId && (!parent || parent.workspaceId !== projectId || branch.parentBranchId === branch.id)) {
+      return "Nested branches must reference another branch in the same project.";
+    }
+    const seen = new Set<string>();
+    let parentId = branch.parentBranchId;
+    while (parentId) {
+      if (seen.has(parentId)) return "Nested branch relationships cannot contain a cycle.";
+      seen.add(parentId);
+      parentId = operatingSystem.branches.find((candidate) => candidate.id === parentId)?.parentBranchId;
+    }
+  }
+
+  for (const edge of operatingSystem.edges) {
+    if (!branchIds.has(edge.fromBranchId) || !branchIds.has(edge.toBranchId) || edge.fromBranchId === edge.toBranchId) {
+      return "Branch relationships must connect branches in the same project.";
+    }
+  }
+
+  const taskIds = new Set(operatingSystem.tasks.map((task) => task.id));
+  const milestoneIds = new Set(operatingSystem.milestones.map((milestone) => milestone.id));
+  const decisionIds = new Set(operatingSystem.decisions.map((decision) => decision.id));
+  for (const task of operatingSystem.tasks) {
+    if (!branchIds.has(task.branchId)) return "Task records must belong to a branch in the same project.";
+    if (!Array.isArray(task.dependencyIds) || task.dependencyIds.some((dependencyId) => !taskIds.has(dependencyId))) {
+      return "Task dependency references must resolve within the project.";
+    }
+    if (!Array.isArray(task.blockedBy) || task.blockedBy.some((blockedTaskId) => !taskIds.has(blockedTaskId))) {
+      return "Task blocked-by references must resolve within the project.";
+    }
+    if (task.milestoneId && !milestoneIds.has(task.milestoneId)) {
+      return "Task milestone references must resolve within the project.";
+    }
+  }
+  for (const branch of operatingSystem.branches) {
+    if (branch.taskIds?.some((taskId) => !taskIds.has(taskId))) return "Branch task references must resolve within the project.";
+    if (branch.decisionIds?.some((decisionId) => !decisionIds.has(decisionId))) return "Branch decision references must resolve within the project.";
+  }
+
+  for (const milestone of operatingSystem.milestones) {
+    if (!branchIds.has(milestone.branchId)) return "Milestone records must belong to a branch in the same project.";
+    if (!Array.isArray(milestone.taskIds) || milestone.taskIds.some((taskId) => !taskIds.has(taskId))) {
+      return "Milestone task references must resolve within the project.";
+    }
+  }
+
+  for (const decision of operatingSystem.decisions) {
+    if (decision.relatedBranchIds.some((relatedBranchId) => !branchIds.has(relatedBranchId))) {
+      return "Decision branch references must resolve within the project.";
+    }
+  }
+
+  if (workspace) {
+    const findingIds = new Set(workspace.researchFindings.map((finding) => finding.id));
+    for (const branch of operatingSystem.branches) {
+      if (branch.researchFindingIds?.some((findingId) => !findingIds.has(findingId) && !legacyResearchFindingIds.has(findingId))) {
+        return "Branch research references must resolve to evidence owned by the project.";
+      }
+    }
+  }
+
+  return null;
+}
+
+function legacyResearchFindingIdsFor(workspace: ProjectWorkspace) {
+  const branches = workspace.operatingSystem?.branches;
+  return new Set(
+    Array.isArray(branches) ? branches.flatMap((branch) => Array.isArray(branch.researchFindingIds) ? branch.researchFindingIds : []) : [],
+  );
+}
+
+function mergeRecords<T extends { id: string }>(current: T[], incoming: T[]) {
+  const currentRecords = Array.isArray(current) ? current : [];
+  const incomingIds = new Set(incoming.map((record) => record.id));
+  return [...currentRecords.filter((record) => !incomingIds.has(record.id)), ...incoming];
+}
+
+function mergeBranches(current: ProjectOperatingSystem["branches"], incoming: ProjectOperatingSystem["branches"]) {
+  const currentBranches = Array.isArray(current) ? current : [];
+  const currentById = new Map(currentBranches.map((branch) => [branch.id, branch]));
+  const incomingIds = new Set(incoming.map((branch) => branch.id));
+  const updated = incoming.map((branch) => ({
+    ...(currentById.get(branch.id) ?? {}),
+    ...branch,
+  }));
+  return [...currentBranches.filter((branch) => !incomingIds.has(branch.id)), ...updated];
+}
+
+function mergeOperatingSystem(
+  current: ProjectOperatingSystem | undefined,
+  incoming: ProjectOperatingSystem,
+  deletedBranchIds: string[] = [],
+): ProjectOperatingSystem {
+  if (!current) {
+    let initial = incoming;
+    for (const branchId of deletedBranchIds) initial = removeBranchTree(initial, branchId);
+    return initial;
+  }
+  const incomingBranchImpactSuggestions = Array.isArray(incoming.branchImpactSuggestions)
+    ? incoming.branchImpactSuggestions
+    : [];
+  const incomingViewport = incoming.viewport ?? incoming.canvasViewport;
+  const currentViewport = current.viewport ?? current.canvasViewport;
+  let merged: ProjectOperatingSystem = {
+    ...current,
+    ...incoming,
+    ...(incomingViewport !== undefined
+      ? { viewport: incomingViewport }
+      : currentViewport !== undefined ? { viewport: currentViewport } : {}),
+    branches: mergeBranches(current.branches, incoming.branches),
+    edges: mergeRecords(current.edges, incoming.edges),
+    tasks: mergeRecords(current.tasks, incoming.tasks),
+    milestones: mergeRecords(current.milestones, incoming.milestones),
+    automations: mergeRecords(current.automations, incoming.automations),
+    automationRuns: mergeRecords(current.automationRuns, incoming.automationRuns),
+    discoveryQuestions: mergeRecords(current.discoveryQuestions, incoming.discoveryQuestions),
+    discoveryAnswers: mergeRecords(current.discoveryAnswers, incoming.discoveryAnswers),
+    decisions: mergeRecords(current.decisions, incoming.decisions),
+    branchImpactSuggestions: incomingBranchImpactSuggestions.length
+      ? incomingBranchImpactSuggestions
+      : Array.isArray(current.branchImpactSuggestions) ? current.branchImpactSuggestions : [],
+  };
+
+  // The regular merge is intentionally additive so a delayed branch-chat or
+  // canvas response cannot erase newer records. Explicit deletion ids are the
+  // narrow exception that lets a user delete an otherwise empty branch tree
+  // without allowing a stale snapshot to resurrect it on the next reload.
+  for (const branchId of deletedBranchIds) merged = removeBranchTree(merged, branchId);
+  return merged;
 }
 
 export function parseOperatingSystemInput(value: unknown): ProjectOperatingSystem | null {
@@ -636,18 +863,40 @@ export async function updateOwnedProjectOperatingSystem(
   projectId: string,
   ownerUserId: string,
   operatingSystem: ProjectOperatingSystem,
+  deletedBranchIds: string[] = [],
 ) {
-  if (!operatingSystem.branches.every((branch) => branch.workspaceId === projectId)) {
-    throw new RepositoryError("invalid-input", "Branch records must belong to the project being updated.");
+  if (!isOperatingSystemShape(operatingSystem)) {
+    throw new RepositoryError("invalid-input", "A valid operating-system update is required.");
   }
+  if (
+    !Array.isArray(deletedBranchIds) ||
+    deletedBranchIds.length > 100 ||
+    deletedBranchIds.some((branchId) => typeof branchId !== "string" || branchId.trim().length === 0 || branchId.length > 200)
+  ) {
+    throw new RepositoryError("invalid-input", "The deleted branch ids are invalid.");
+  }
+  const incomingValidationError = operatingSystem.branches.some((branch) => branch.workspaceId !== projectId)
+    ? "Branch records must belong to the project being updated."
+    : null;
+  if (incomingValidationError) throw new RepositoryError("invalid-input", incomingValidationError);
   return mutateDatabase((database) => {
     const project = database.projects.find(
       (candidate) => candidate.id === projectId && candidate.ownerUserId === ownerUserId,
     );
     if (!project) return null;
-    project.workspace = {
+    const mergedOperatingSystem = mergeOperatingSystem(project.workspace.operatingSystem, operatingSystem, deletedBranchIds);
+    const legacyResearchFindingIds = legacyResearchFindingIdsFor(project.workspace);
+    const validationError = operatingSystemValidationError(mergedOperatingSystem, projectId, project.workspace, legacyResearchFindingIds);
+    if (validationError) throw new RepositoryError("invalid-input", validationError);
+    const normalizedWorkspace = ensureOperatingSystem({
       ...project.workspace,
-      operatingSystem,
+      operatingSystem: mergedOperatingSystem,
+    });
+    const normalizedOperatingSystem = normalizedWorkspace.operatingSystem;
+    if (!normalizedOperatingSystem) throw new RepositoryError("invalid-input", "A valid operating-system update is required.");
+    project.workspace = {
+      ...normalizedWorkspace,
+      operatingSystem: normalizedOperatingSystem,
       updatedAt: now(),
     };
     project.updatedAt = project.workspace.updatedAt;
@@ -657,14 +906,14 @@ export async function updateOwnedProjectOperatingSystem(
 
 /** Idempotent by anonymous draft id: a repeated attach returns the original project. */
 export async function attachAnonymousDraftToUser(draftId: string, userId: string) {
-  return mutateDatabase((database) => {
+  return mutateDatabase(async (database) => {
     const draft = database.anonymousIdeaDrafts.find((candidate) => candidate.id === draftId);
     if (!draft) throw new RepositoryError("not-found", "The anonymous draft was not found.");
     if (draft.attachedUserId && draft.attachedUserId !== userId) throw new RepositoryError("draft-attached", "The anonymous draft has already been attached.");
     if (draft.attachedProjectId) {
       return database.projects.find((project) => project.id === draft.attachedProjectId) || null;
     }
-    const project = projectFromDraft(draft, userId);
+    const project = await enhanceOwnedProjectPlan(projectFromDraft(draft, userId));
     database.projects.push(project);
     draft.attachedUserId = userId;
     draft.attachedProjectId = project.id;

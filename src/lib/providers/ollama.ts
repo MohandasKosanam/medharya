@@ -149,6 +149,12 @@ function endpointFor(baseUrl: string) {
   return new URL(`${basePath}/api/chat`, parsed.origin).toString();
 }
 
+function tagsEndpointFor(baseUrl: string) {
+  const parsed = new URL(baseUrl);
+  const basePath = parsed.pathname.replace(/\/+$/, "");
+  return new URL(`${basePath}/api/tags`, parsed.origin).toString();
+}
+
 function timeoutFor(value: unknown) {
   const parsed = Number(value);
   const timeout = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
@@ -220,6 +226,13 @@ function reasonFromStatus(status: number): ProviderErrorReason {
   if (status === 429) return PROVIDER_ERROR_REASONS.rateLimit;
   if (status >= 500) return PROVIDER_ERROR_REASONS.transientError;
   return PROVIDER_ERROR_REASONS.invalidResponse;
+}
+
+function reasonFromOllamaError(status: number, payload: unknown): ProviderErrorReason {
+  if (status === 404 && isRecord(payload) && typeof payload.error === "string" && /model|not found/i.test(payload.error)) {
+    return PROVIDER_ERROR_REASONS.modelMissing;
+  }
+  return reasonFromStatus(status);
 }
 
 function boundedPrompt(prompt: ModelPrompt) {
@@ -295,7 +308,15 @@ async function requestOllamaOnce(
       signal: controller.signal,
     });
 
-    if (!response.ok) return unavailable(reasonFromStatus(response.status), config.model);
+    if (!response.ok) {
+      let errorPayload: unknown;
+      try {
+        errorPayload = await response.json();
+      } catch {
+        errorPayload = undefined;
+      }
+      return unavailable(reasonFromOllamaError(response.status, errorPayload), config.model);
+    }
 
     let payload: unknown;
     try {
@@ -354,8 +375,58 @@ export function getOllamaProviderStatus(
   };
 }
 
+async function checkOllamaHealth(config: NormalizedOllamaConfig): Promise<ModelProviderStatus> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+  try {
+    const response = await config.request(tagsEndpointFor(config.baseUrl), {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return {
+        provider: OLLAMA_PROVIDER_ID,
+        model: config.model,
+        state: "unavailable",
+        reason: response.status >= 500 ? PROVIDER_ERROR_REASONS.transientError : PROVIDER_ERROR_REASONS.invalidResponse,
+        identityVerified: false,
+      };
+    }
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      return { provider: OLLAMA_PROVIDER_ID, model: config.model, state: "unavailable", reason: PROVIDER_ERROR_REASONS.invalidResponse, identityVerified: false };
+    }
+    if (!isRecord(payload) || !Array.isArray(payload.models)) {
+      return { provider: OLLAMA_PROVIDER_ID, model: config.model, state: "unavailable", reason: PROVIDER_ERROR_REASONS.invalidResponse, identityVerified: false };
+    }
+    const installed = payload.models.some((item) => isRecord(item) && (item.name === config.model || item.model === config.model));
+    return {
+      provider: OLLAMA_PROVIDER_ID,
+      model: config.model,
+      state: installed ? "ready" : "unavailable",
+      reason: installed ? undefined : PROVIDER_ERROR_REASONS.modelMissing,
+      identityVerified: installed,
+      checkedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    return {
+      provider: OLLAMA_PROVIDER_ID,
+      model: config.model,
+      state: "unavailable",
+      reason: isAbortError(error) ? PROVIDER_ERROR_REASONS.timeout : PROVIDER_ERROR_REASONS.transientError,
+      identityVerified: false,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function createOllamaProvider(options: OllamaProviderOptions): ModelProvider {
   const model = configuredValue(options.model) ?? DEFAULT_MODEL;
+  let currentStatus = getOllamaProviderStatus(options);
 
   return {
     name: "Ollama provider",
@@ -363,8 +434,13 @@ export function createOllamaProvider(options: OllamaProviderOptions): ModelProvi
     complete(prompt: ModelPrompt) {
       return requestOllama(options, prompt, options.request);
     },
+    async health() {
+      const config = normalizeConfig(options);
+      currentStatus = config ? await checkOllamaHealth(config) : getOllamaProviderStatus(options);
+      return currentStatus;
+    },
     getStatus() {
-      return getOllamaProviderStatus(options);
+      return currentStatus;
     },
   };
 }

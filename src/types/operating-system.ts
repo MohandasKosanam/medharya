@@ -37,6 +37,18 @@ export interface BranchTemplateDefinition {
   description: string;
 }
 
+/** Persisted coordinates for a branch in the project idea map. */
+export interface CanvasPosition {
+  x: number;
+  y: number;
+}
+
+/** Persisted camera state for the project idea map. */
+export interface CanvasViewport {
+  zoom: number;
+  pan: CanvasPosition;
+}
+
 export const DEFAULT_BRANCH_TEMPLATES: readonly BranchTemplateDefinition[] = [
   {
     template: "product-strategy",
@@ -100,6 +112,7 @@ export interface ProjectBranch {
   provenance: OperatingSystemProvenance;
   approvalStatus: ApprovalStatus;
   parentBranchId?: string;
+  canvasPosition?: CanvasPosition;
   messages: WorkspaceMessage[];
   requirements: string[];
   researchFindingIds: string[];
@@ -261,6 +274,10 @@ export interface UserPreferences {
 export interface ProjectOperatingSystem {
   branches: ProjectBranch[];
   edges: BranchEdge[];
+  /** Optional so legacy browser/server records remain readable. */
+  viewport?: CanvasViewport;
+  /** Transitional alias accepted while older milestone records are upgraded. */
+  canvasViewport?: CanvasViewport;
   tasks: Task[];
   milestones: Milestone[];
   automations: AutomationDefinition[];
@@ -281,6 +298,8 @@ export interface BranchDraft {
   status?: BranchStatus;
   provenance?: OperatingSystemProvenance;
   approvalStatus?: ApprovalStatus;
+  parentBranchId?: string;
+  canvasPosition?: CanvasPosition;
   timestamp?: string;
 }
 

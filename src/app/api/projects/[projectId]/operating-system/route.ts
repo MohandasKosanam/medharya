@@ -26,15 +26,26 @@ export async function PATCH(request: Request, context: ProjectRouteContext) {
       return NextResponse.json({ error: "The operating-system update is too large." }, { status: 413 });
     }
     const body: unknown = await request.json();
-    const candidate = typeof body === "object" && body !== null && "operatingSystem" in body
-      ? body.operatingSystem
+    const bodyRecord = typeof body === "object" && body !== null ? body as Record<string, unknown> : null;
+    const candidate = bodyRecord && "operatingSystem" in bodyRecord
+      ? bodyRecord.operatingSystem
       : body;
+    const deletedBranchIds = bodyRecord && "deletedBranchIds" in bodyRecord
+      ? bodyRecord.deletedBranchIds
+      : [];
+    if (
+      !Array.isArray(deletedBranchIds) ||
+      deletedBranchIds.length > 100 ||
+      deletedBranchIds.some((branchId) => typeof branchId !== "string" || branchId.trim().length === 0 || branchId.length > 200)
+    ) {
+      return NextResponse.json({ error: "The deleted branch ids are invalid." }, { status: 400 });
+    }
     const operatingSystem = parseOperatingSystemInput(candidate);
     if (!operatingSystem) {
       return NextResponse.json({ error: "A valid operating-system update is required." }, { status: 400 });
     }
 
-    const project = await updateOwnedProjectOperatingSystem(projectId, user.id, operatingSystem);
+    const project = await updateOwnedProjectOperatingSystem(projectId, user.id, operatingSystem, deletedBranchIds);
     if (!project) return NextResponse.json({ error: "Project not found." }, { status: 404 });
     return NextResponse.json({ project: project.workspace });
   } catch (error) {

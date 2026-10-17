@@ -49,6 +49,24 @@ if (anonymous.response.status !== 200 || typeof anonymous.payload?.draft?.id !==
 }
 
 const draftId = anonymous.payload.draft.id;
+const anonymousRetry = await request("/api/auth/anonymous-draft", {
+  method: "POST",
+  body: JSON.stringify({
+    idea: "Build a budget-friendly student travel planner",
+    category: "AI application",
+    budgetInr: 5000,
+    experienceLevel: "Beginner",
+    preferredTechnologies: ["Python"],
+    deploymentPreference: "Deploy online",
+    additionalRequirements: "Keep the first version simple and accessible.",
+    submittedAt: new Date().toISOString(),
+    anonymousDraftId: draftId,
+  }),
+});
+if (anonymousRetry.response.status !== 200 || anonymousRetry.payload?.draft?.id !== draftId) {
+  throw new Error("Anonymous draft retry idempotency check failed.");
+}
+
 const signup = await request("/api/auth/signup", {
   method: "POST",
   body: JSON.stringify({ email, password, displayName: "Smoke User", anonymousDraftId: draftId }),
@@ -58,6 +76,14 @@ if (signup.response.status !== 201 || !signup.payload.project?.id) {
 }
 
 const projectId = signup.payload.project.id;
+const signupRetry = await request("/api/auth/signup", {
+  method: "POST",
+  body: JSON.stringify({ email, password, displayName: "Smoke User", anonymousDraftId: draftId }),
+});
+if (signupRetry.response.status !== 201 || signupRetry.payload.project?.id !== projectId) {
+  throw new Error("Signup retry idempotency check failed.");
+}
+
 const me = await request("/api/auth/me");
 if (me.response.status !== 200 || me.payload.user?.email !== email) {
   throw new Error("Authenticated session check failed.");
@@ -93,6 +119,37 @@ const invalidOperatingSystemPatch = await request(`/api/projects/${projectId}/op
 });
 if (invalidOperatingSystemPatch.response.status !== 400) {
   throw new Error("Operating-system project-boundary validation check failed.");
+}
+
+const greetingChat = await request(`/api/chat`, {
+  method: "POST",
+  body: JSON.stringify({ projectId, message: "hi", messageId: `greeting-${Date.now()}` }),
+});
+if (
+  greetingChat.response.status !== 200
+  || typeof greetingChat.payload?.content !== "string"
+  || (greetingChat.payload?.source === "deterministic-fallback" && greetingChat.payload?.content !== "Hi! How can I help with your project today?")
+  || greetingChat.payload?.notice?.includes("Automatic research")
+) {
+  throw new Error("Server-owned natural greeting regression check failed.");
+}
+
+const researchAwareChat = await request(`/api/chat`, {
+  method: "POST",
+  body: JSON.stringify({
+    projectId,
+    message: "What is the current pricing and availability for this project stack?",
+    messageId: `research-aware-${Date.now()}`,
+  }),
+});
+if (
+  researchAwareChat.response.status !== 200
+  || typeof researchAwareChat.payload?.content !== "string"
+  || typeof researchAwareChat.payload?.notice !== "string"
+  || !researchAwareChat.payload.notice.includes("Automatic research")
+  || !researchAwareChat.payload.workspace?.messages?.some((message) => message.source === "deterministic-fallback")
+) {
+  throw new Error("Research-aware server chat fallback check failed.");
 }
 
 const logout = await request("/api/auth/logout", { method: "POST" });

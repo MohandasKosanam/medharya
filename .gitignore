@@ -40,6 +40,9 @@ yarn-error.log*
 # local prototype server data
 /data/
 
+# private OmniRush attachments and agent-local state
+/.opencode/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

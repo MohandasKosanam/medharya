@@ -2,7 +2,10 @@ import type { TechnologyTool } from "@/catalog/types";
 
 export type RecommendationProvenance =
   | "deterministic-catalogue"
+  | "deterministic-fallback"
   | "model-assisted"
+  | "ai-generated"
+  | "ai-plus-web-research"
   | "web-researched";
 
 export interface PlanStackItem {

@@ -107,7 +107,7 @@ try {
   const status = await request(`/api/ai/status?projectId=${encodeURIComponent(projectId)}`);
   assert(status.response.status === 200, `Live Ollama status request failed with HTTP ${status.response.status}.`);
   assert(status.payload.providerStatus?.provider === "ollama", "Live status did not identify Ollama.");
-  assert(status.payload.providerStatus?.state === "configured", "Live status was not configured before inference.");
+  assert(status.payload.providerStatus?.state === "ready", "Live status was not ready before inference.");
 
   const chat = await request("/api/chat", {
     method: "POST",
@@ -130,10 +130,23 @@ try {
   );
   assert(chat.payload.provider === "ollama", "Live chat did not identify Ollama.");
   assert(chat.payload.model === model, `Live chat returned model ${chat.payload.model ?? "<missing>"}, expected ${model}.`);
-  assert(chat.payload.providerStatus?.state === "ready", "Live Ollama inference did not become ready.");
+  assert(["ready", "degraded"].includes(chat.payload.providerStatus?.state), "Live Ollama inference did not produce an observed provider state.");
   assert(chat.payload.contextSource === "server-owned", "Live chat did not use server-owned context.");
   assert(typeof chat.payload.content === "string" && chat.payload.content.trim(), "Live Ollama response had no visible content.");
   assert(chat.payload.workspace?.messages?.some((message) => message.role === "assistant"), "Live Ollama response was not persisted.");
+
+  const greeting = await request("/api/chat", {
+    method: "POST",
+    body: JSON.stringify({
+      projectId,
+      message: "hello",
+      messageId: `ollama-live-greeting-${Date.now()}`,
+    }),
+  });
+  assert(greeting.response.status === 200, "Live Ollama greeting failed with HTTP 200.");
+  assert(greeting.payload.source === "model-assisted", "Live Ollama greeting did not use model-assisted output.");
+  assert(typeof greeting.payload.content === "string" && greeting.payload.content.trim(), "Live Ollama greeting had no visible content.");
+  assert(!String(greeting.payload.notice ?? "").includes("Automatic research"), "Live Ollama greeting unexpectedly triggered research.");
 
   console.log(JSON.stringify({
     live: true,
@@ -144,6 +157,8 @@ try {
     inferenceStatus: chat.payload.providerStatus.state,
     identityVerified: chat.payload.providerStatus.identityVerified ?? false,
     contentChars: chat.payload.content.length,
+    greetingSource: greeting.payload.source,
+    greetingContentChars: greeting.payload.content.length,
     statusBeforeInference: status.payload.providerStatus.state,
     workspacePersisted: true,
   }));

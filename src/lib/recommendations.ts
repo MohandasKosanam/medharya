@@ -314,6 +314,79 @@ function stackItem(candidate: NonNullable<ReturnType<typeof chooseTool>>): PlanS
   };
 }
 
+export interface ModelPlanSignals {
+  summary?: string;
+  selectedToolIds: string[];
+  alternativeToolIds: string[];
+  openQuestions: string[];
+  assumptions: string[];
+}
+
+function stackItemForTool(request: ProjectRequest, tool: CatalogueTool): PlanStackItem {
+  const scored = scoreTool(tool, request);
+  return stackItem({ tool, ...scored });
+}
+
+/**
+ * Apply a validated model selection to the deterministic plan skeleton. The
+ * model can choose only catalogue IDs; roadmap, budget, compatibility, and
+ * source metadata remain server-owned and deterministic.
+ */
+export function applyModelPlanSignals(
+  request: ProjectRequest,
+  basePlan: SolutionPlan,
+  signals: ModelPlanSignals,
+  provenance: SolutionPlan["provenance"] = "model-assisted",
+): SolutionPlan {
+  const selectedTools = signals.selectedToolIds
+    .map((id) => getCatalogueTool(id))
+    .filter((tool): tool is CatalogueTool => Boolean(tool));
+  if (!selectedTools.length) return basePlan;
+
+  const selectedIds = selectedTools.map((tool) => tool.id);
+  const alternatives = signals.alternativeToolIds
+    .map((id) => getCatalogueTool(id))
+    .filter((tool): tool is CatalogueTool => Boolean(tool))
+    .filter((tool) => !selectedIds.includes(tool.id))
+    .slice(0, 4)
+    .map((tool) => ({
+      toolId: tool.id,
+      toolName: tool.name,
+      tradeoff: "Model-suggested alternative; verify current documentation, limits, and project fit before committing.",
+    }));
+  const cleanLines = (values: string[], maximum: number, length: number) => [...new Set(
+    values
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim().slice(0, length))
+      .filter(Boolean),
+  )].slice(0, maximum);
+  const modelQuestions = cleanLines(signals.openQuestions, 4, 240);
+  const modelAssumptions = cleanLines(signals.assumptions, 6, 300);
+
+  return {
+    ...basePlan,
+    generatedAt: new Date().toISOString(),
+    provenance,
+    summary: typeof signals.summary === "string" && signals.summary.trim()
+      ? signals.summary.trim().slice(0, 700)
+      : `A model-assisted direction selected ${selectedTools.map((tool) => tool.name).join(", ")} from the curated catalogue. Verify the current documentation and constraints before committing.`,
+    stack: selectedTools.slice(0, MAX_STACK_ITEMS).map((tool) => stackItemForTool(request, tool)),
+    compatibility: validateCatalogueCompatibility(selectedIds),
+    alternatives: alternatives.length ? alternatives : basePlan.alternatives,
+    openQuestions: modelQuestions.length ? modelQuestions : basePlan.openQuestions,
+    assumptions: [
+      ...modelAssumptions,
+      "The model selected catalogue entries, but current pricing, compatibility, and service limits remain unverified.",
+    ].slice(0, 8),
+    sources: selectedTools.map((tool) => ({
+      kind: "catalogue" as const,
+      label: `${tool.name} official pages (curated link)`,
+      url: tool.documentationUrl,
+      verificationStatus: "curated" as const,
+    })),
+  };
+}
+
 function alternativesFor(request: ProjectRequest, selectedIds: string[]) {
   const alternatives: PlanAlternative[] = [];
   const add = (toolId: string, tradeoff: string) => {

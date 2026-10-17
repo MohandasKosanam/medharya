@@ -6,6 +6,7 @@ import type {
 } from "@/types/research";
 import {
   createSearchEvidence,
+  classifyResearchFreshness,
   deduplicateResearchFindings,
   normalizeResearchUrl,
   stableResearchId,
@@ -20,6 +21,8 @@ import {
 const BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 const SEARCH_TIMEOUT_MS = 10_000;
 const DEFAULT_PAGE_ATTEMPTS = 3;
+const DEFAULT_SEARCH_ATTEMPTS = 2;
+const DEFAULT_RETRY_DELAY_MS = 150;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -29,13 +32,26 @@ function configuredKey(value = process.env.BRAVE_SEARCH_API_KEY) {
   return value?.trim() || null;
 }
 
-function resultFinding(value: unknown, retrievedAt: string): ResearchFinding | null {
+function dateValue(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
+}
+
+function resultFinding(value: unknown, retrievedAt: string, query: string): ResearchFinding | null {
   if (!isRecord(value)) return null;
   const title = typeof value.title === "string" ? value.title.trim() : "";
   const url = typeof value.url === "string" ? value.url.trim() : "";
   const snippet = typeof value.description === "string" ? value.description.trim() : "";
   const canonicalUrl = normalizeResearchUrl(url);
   if (!title || !canonicalUrl || !snippet) return null;
+  let domain: string | undefined;
+  try {
+    domain = new URL(canonicalUrl).hostname;
+  } catch {
+    domain = undefined;
+  }
+  const publicationDate = dateValue(value.page_age ?? value.published ?? value.publishedAt);
 
   return {
     id: stableResearchId("finding", canonicalUrl),
@@ -47,6 +63,9 @@ function resultFinding(value: unknown, retrievedAt: string): ResearchFinding | n
     verificationStatus: "retrieved-not-yet-verified",
     evidenceKind: "search-snippet",
     pageRetrieved: false,
+    ...(domain ? { domain } : {}),
+    ...(publicationDate ? { publicationDate } : {}),
+    query,
   };
 }
 
@@ -74,6 +93,14 @@ function retrievalMessage(error: unknown) {
   return "The search result snippet was retained, but its public page could not be retrieved safely.";
 }
 
+function retryableSearchStatus(status: number) {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+function wait(milliseconds: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
 export interface BraveSearchOptions {
   apiKey?: string;
   fetcher?: PageFetcher;
@@ -81,6 +108,8 @@ export interface BraveSearchOptions {
   retrievePage?: typeof retrievePublicPage;
   now?: () => string;
   pageAttempts?: number;
+  maxAttempts?: number;
+  retryDelayMs?: number;
 }
 
 export async function searchWithBrave(query: string, limit = 5, options: BraveSearchOptions = {}): Promise<ResearchResponse> {
@@ -102,26 +131,38 @@ export async function searchWithBrave(query: string, limit = 5, options: BraveSe
   url.searchParams.set("q", query.trim().slice(0, 300));
   url.searchParams.set("count", String(Math.min(Math.max(limit, 1), 10)));
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetcher(url.toString(), {
-      headers: {
-        Accept: "application/json",
-        "X-Subscription-Token": key,
-      },
-      signal: controller.signal,
-    });
-  } catch (error) {
+  const maxAttempts = Math.min(Math.max(options.maxAttempts ?? DEFAULT_SEARCH_ATTEMPTS, 1), 3);
+  const retryDelayMs = Math.min(Math.max(options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS, 0), 2_000);
+  let response: Response | undefined;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
+    try {
+      response = await fetcher(url.toString(), {
+        headers: {
+          Accept: "application/json",
+          "X-Subscription-Token": key,
+        },
+        signal: controller.signal,
+      });
+      if (!retryableSearchStatus(response.status) || attempt === maxAttempts - 1) break;
+    } catch (error) {
+      lastError = error;
+      if (attempt === maxAttempts - 1) break;
+    } finally {
+      clearTimeout(timeout);
+    }
+    await wait(retryDelayMs * (attempt + 1));
+  }
+
+  if (!response) {
     return {
       status: "error",
       provider: "brave-search",
-      message: error instanceof Error && error.name === "AbortError" ? "The research provider timed out." : "The research provider could not be reached.",
+      message: lastError instanceof Error && lastError.name === "AbortError" ? "The research provider timed out." : "The research provider could not be reached.",
       findings: [],
     };
-  } finally {
-    clearTimeout(timeout);
   }
 
   if (!response.ok) {
@@ -148,7 +189,7 @@ export async function searchWithBrave(query: string, limit = 5, options: BraveSe
   const results = web && Array.isArray(web.results) ? web.results : [];
   const findings = deduplicateResearchFindings(
     results
-      .map((result) => resultFinding(result, retrievedAt))
+      .map((result) => resultFinding(result, retrievedAt, query))
       .filter((finding): finding is ResearchFinding => Boolean(finding)),
   ).slice(0, Math.min(Math.max(limit, 1), 10));
 
@@ -184,13 +225,20 @@ export async function searchWithBrave(query: string, limit = 5, options: BraveSe
         verificationStatus: "page-retrieved",
         contentType: page.contentType,
         wordCount: page.wordCount,
+        headings: page.headings,
       };
       source.canonicalUrl = normalizeResearchUrl(page.finalUrl) ?? source.canonicalUrl;
+      source.canonicalUrl = normalizeResearchUrl(page.canonicalUrl) ?? source.canonicalUrl;
       source.retrievalStatus = "page-retrieved";
       source.contentType = page.contentType;
+      if (page.publicationDate) {
+        source.publicationDate = page.publicationDate;
+        source.freshness = classifyResearchFreshness(page.publicationDate, retrievedAt);
+      }
       finding.verificationStatus = "page-retrieved-not-yet-verified";
       finding.evidenceKind = "retrieved-page";
       finding.pageRetrieved = true;
+      if (page.publicationDate) finding.publicationDate = page.publicationDate;
       evidence.push(pageEvidence);
       finding.evidenceId = pageEvidence.id;
       pagesRetrieved += 1;

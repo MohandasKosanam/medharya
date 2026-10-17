@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 const providerServer = createServer();
 let providerRequests = 0;
+let lastProviderBody = null;
 
 function readRequestBody(request) {
   return new Promise((resolve, reject) => {
@@ -28,12 +29,19 @@ providerServer.on("request", async (request, response) => {
     return;
   }
   providerRequests += 1;
+  lastProviderBody = body;
   if (providerRequests === 1) {
     response.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ error: "transient test response" }));
     return;
   }
+  const isPlanRequest = body.messages.some((message) => typeof message?.content === "string" && message.content.includes("Return JSON only"));
+  const userContent = body.messages.at(-1)?.content;
   response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
-    choices: [{ message: { content: "Mock provider response grounded in the server-owned project context." } }],
+    choices: [{ message: { content: isPlanRequest
+      ? JSON.stringify({ summary: "Mock model-assisted plan.", selectedToolIds: ["vite", "typescript", "sqlite"], alternativeToolIds: ["nextjs"], openQuestions: [], assumptions: [] })
+      : userContent === "unknown citation response"
+        ? "Model answer with [evidence:not-owned] that should remain model-assisted."
+      : "Mock provider response grounded in the server-owned project context." } }],
     usage: { prompt_tokens: 12, completion_tokens: 9, total_tokens: 21 },
   }));
 });
@@ -119,6 +127,63 @@ try {
   const cookie = signup.headers.get("set-cookie")?.split(";")[0] ?? "";
   if (signup.status !== 201 || typeof projectId !== "string" || !cookie) throw new Error("Provider smoke account setup failed.");
 
+  const operatingSystem = structuredClone(signupPayload.project.operatingSystem);
+  const parentBranch = operatingSystem.branches.find((branch) => branch.template === "product-strategy") ?? operatingSystem.branches[0];
+  const relatedBranch = operatingSystem.branches.find((branch) => branch.template === "market-research") ?? operatingSystem.branches[1];
+  const nestedBranch = {
+    id: `${projectId}-provider-nested`,
+    workspaceId: projectId,
+    name: "Provider nested branch",
+    template: "development-architecture",
+    description: "A nested branch used by the provider context smoke check.",
+    status: "active",
+    provenance: "user",
+    approvalStatus: "pending",
+    parentBranchId: parentBranch.id,
+    messages: [],
+    requirements: ["Keep provider context branch-aware."],
+    researchFindingIds: [],
+    decisionIds: [],
+    taskIds: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  operatingSystem.branches.push(nestedBranch);
+  operatingSystem.edges.push({
+    id: `${projectId}-provider-related`,
+    fromBranchId: nestedBranch.id,
+    toBranchId: relatedBranch.id,
+    relationship: "related-to",
+    status: "active",
+    provenance: "user",
+    approvalStatus: "pending",
+    rationale: "Provider context smoke relationship",
+  });
+  const operatingSystemPatch = await request(`/api/projects/${projectId}/operating-system`, {
+    method: "PATCH",
+    headers: { cookie },
+    body: JSON.stringify({ operatingSystem }),
+  });
+  if (operatingSystemPatch.status !== 200) throw new Error("Provider smoke operating-system setup failed.");
+
+  const plan = await request("/api/plan", {
+    method: "POST",
+    body: JSON.stringify({
+      submittedAt: new Date().toISOString(),
+      idea: "Build a local AI travel companion",
+      category: "AI application",
+      budgetInr: 5000,
+      experienceLevel: "Intermediate",
+      preferredTechnologies: ["Python"],
+      deploymentPreference: "Local development only",
+      additionalRequirements: "Keep the provider path explicit.",
+    }),
+  });
+  const planPayload = await plan.json();
+  if (plan.status !== 200 || planPayload.provenance !== "model-assisted" || planPayload.fallback !== false || planPayload.provider !== "openai-compatible") {
+    throw new Error("Provider-backed plan provenance check failed.");
+  }
+
   const chat = await request("/api/chat", {
     method: "POST",
     headers: { cookie },
@@ -129,6 +194,35 @@ try {
     throw new Error("Provider-backed chat response was not normalized as expected.");
   }
   if (providerRequests < 2) throw new Error("Transient provider failure did not exercise the bounded retry.");
+
+  const unknownCitation = await request("/api/chat", {
+    method: "POST",
+    headers: { cookie },
+    body: JSON.stringify({ projectId, message: "unknown citation response", messageId: "provider-smoke-unknown-citation" }),
+  });
+  const unknownCitationPayload = await unknownCitation.json();
+  if (
+    unknownCitation.status !== 200
+    || unknownCitationPayload.source !== "model-assisted"
+    || unknownCitationPayload.content.includes("evidence:not-owned")
+    || !unknownCitationPayload.notice?.includes("unsupported evidence markers")
+  ) {
+    throw new Error("Unsupported model citation handling did not preserve safe model output.");
+  }
+
+  const branchChat = await request("/api/chat", {
+    method: "POST",
+    headers: { cookie },
+    body: JSON.stringify({ projectId, branchId: nestedBranch.id, message: "Use the nested provider context.", messageId: "provider-smoke-branch-message" }),
+  });
+  const branchChatPayload = await branchChat.json();
+  if (branchChat.status !== 200 || branchChatPayload.source !== "model-assisted" || !branchChatPayload.workspace?.operatingSystem?.branches?.find((branch) => branch.id === nestedBranch.id)?.messages?.some((message) => message.id === "provider-smoke-branch-message")) {
+    throw new Error("Provider-backed branch chat persistence check failed.");
+  }
+  const providerContext = JSON.stringify(lastProviderBody?.messages ?? []);
+  if (!providerContext.includes(nestedBranch.name) || !providerContext.includes(parentBranch.name) || !providerContext.includes(relatedBranch.name)) {
+    throw new Error("Provider-backed cross-branch context check failed.");
+  }
 
   console.log(`Provider integration smoke checks passed against ${baseUrl}.`);
 } catch (error) {

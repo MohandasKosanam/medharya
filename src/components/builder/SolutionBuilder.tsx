@@ -28,12 +28,15 @@ import {
   validateProjectDraft,
 } from "@/lib/validation";
 import {
+  clearAnonymousDraftId,
   clearProjectDraft,
   getDefaultProjectDraft,
+  loadAnonymousDraftId,
   loadProjectDraft,
+  saveAnonymousDraftId,
   saveProjectDraft,
 } from "@/lib/storage";
-import { createProjectWorkspace } from "@/lib/workspace";
+import { createProjectWorkspace, createStableId } from "@/lib/workspace";
 import { saveProjectWorkspace } from "@/lib/workspace-storage";
 
 import { AuthGate } from "@/components/auth/AuthGate";
@@ -84,6 +87,8 @@ export function SolutionBuilder() {
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [anonymousDraftId, setAnonymousDraftId] = useState<string | null>(null);
   const [showAuthGate, setShowAuthGate] = useState(false);
+  const anonymousDraftIdRef = useRef<string | null>(null);
+  const submissionInFlightRef = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
@@ -93,6 +98,11 @@ export function SolutionBuilder() {
     const frame = window.requestAnimationFrame(() => {
       const savedDraft = loadProjectDraft();
       if (savedDraft) setDraft(savedDraft);
+      const savedAnonymousDraftId = loadAnonymousDraftId();
+      if (savedAnonymousDraftId) {
+        anonymousDraftIdRef.current = savedAnonymousDraftId;
+        setAnonymousDraftId(savedAnonymousDraftId);
+      }
       setHasHydratedDraft(true);
     });
 
@@ -150,7 +160,13 @@ export function SolutionBuilder() {
 
   function addCustomTechnology() {
     const technology = customTechnology.trim();
-    if (!technology || draft.preferredTechnologies.includes(technology)) return;
+    if (
+      !technology ||
+      draft.preferredTechnologies.length >= MAX_TECHNOLOGIES ||
+      draft.preferredTechnologies.some(
+        (item) => item.toLocaleLowerCase() === technology.toLocaleLowerCase(),
+      )
+    ) return;
 
     updateDraft("preferredTechnologies", [
       ...draft.preferredTechnologies,
@@ -170,6 +186,7 @@ export function SolutionBuilder() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submissionInFlightRef.current) return;
     const nextErrors = validationErrors;
     setShowAllErrors(true);
 
@@ -188,6 +205,11 @@ export function SolutionBuilder() {
     }
 
     const request = createProjectRequest(draft);
+    const stableDraftId = anonymousDraftIdRef.current ?? loadAnonymousDraftId() ?? createStableId("anonymous-draft");
+    anonymousDraftIdRef.current = stableDraftId;
+    setAnonymousDraftId(stableDraftId);
+    saveAnonymousDraftId(stableDraftId);
+    submissionInFlightRef.current = true;
     setIsCreatingWorkspace(true);
     setWorkspaceError(null);
 
@@ -195,7 +217,7 @@ export function SolutionBuilder() {
       const response = await fetch("/api/auth/anonymous-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request),
+        body: JSON.stringify({ ...request, anonymousDraftId: stableDraftId }),
       });
       const payload: unknown = await response.json();
       const record = typeof payload === "object" && payload !== null
@@ -217,7 +239,9 @@ export function SolutionBuilder() {
         throw new Error("The server returned an invalid draft id.");
       }
 
+      anonymousDraftIdRef.current = draftRecord.id;
       setAnonymousDraftId(draftRecord.id);
+      saveAnonymousDraftId(draftRecord.id);
       setShowAuthGate(true);
       setSubmittedRequest(request);
       setIsCreatingWorkspace(false);
@@ -229,6 +253,8 @@ export function SolutionBuilder() {
           : "The account handoff was unavailable. You can still continue locally.",
       );
       setSubmittedRequest(request);
+    } finally {
+      submissionInFlightRef.current = false;
     }
   }
 
@@ -239,8 +265,10 @@ export function SolutionBuilder() {
       );
     }
     clearProjectDraft();
+    clearAnonymousDraftId();
     setShowAuthGate(false);
     setAnonymousDraftId(null);
+    anonymousDraftIdRef.current = null;
     setIsCreatingWorkspace(false);
     router.push(`/workspace/${workspace.id}`);
   }
@@ -257,8 +285,10 @@ export function SolutionBuilder() {
       return;
     }
     clearProjectDraft();
+    clearAnonymousDraftId();
     setShowAuthGate(false);
     setAnonymousDraftId(null);
+    anonymousDraftIdRef.current = null;
     setIsCreatingWorkspace(false);
     router.push(`/workspace/${workspace.id}`);
   }
@@ -271,13 +301,19 @@ export function SolutionBuilder() {
   }
 
   function handleClearDraft() {
+    if (submissionInFlightRef.current) return;
     if (!window.confirm("Clear this locally saved project draft?")) return;
 
     clearProjectDraft();
+    clearAnonymousDraftId();
     setDraft(getDefaultProjectDraft());
+    setCustomTechnology("");
     setTouched(new Set());
     setShowAllErrors(false);
     setSubmittedRequest(null);
+    setWorkspaceError(null);
+    setAnonymousDraftId(null);
+    anonymousDraftIdRef.current = null;
     setSaveState("saved");
   }
 
@@ -657,7 +693,7 @@ export function SolutionBuilder() {
             </div>
 
             <div className="form-card-footer">
-              <button className="button button-ghost" type="button" onClick={handleClearDraft}>
+                <button className="button button-ghost" type="button" onClick={handleClearDraft} disabled={isCreatingWorkspace}>
                 Clear local draft
               </button>
               <button className="button button-primary button-submit" type="submit" disabled={isCreatingWorkspace}>

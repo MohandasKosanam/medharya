@@ -1,8 +1,12 @@
 import type {
   ResearchClaim,
   ResearchCitation,
+  ResearchAssessment,
+  ResearchContradiction,
   ResearchEvidence,
+  ResearchFreshness,
   ResearchFinding,
+  ResearchSourceQuality,
   ResearchSource,
 } from "@/types/research";
 
@@ -34,6 +38,38 @@ export function normalizeResearchUrl(value: string) {
   }
 }
 
+export function classifyResearchSourceQuality(value: string): ResearchSourceQuality {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase().replace(/^www\./, "");
+    if (hostname.startsWith("docs.") || hostname.startsWith("developer.") || hostname.startsWith("api.")) {
+      return "official-documentation";
+    }
+    if (hostname.endsWith(".gov") || hostname.endsWith(".gov.uk") || hostname.endsWith(".edu")) {
+      return "primary-source";
+    }
+    if (["github.com", "gitlab.com", "npmjs.com", "pypi.org", "arxiv.org"].includes(hostname)) {
+      return "primary-source";
+    }
+    if (["wikipedia.org", "stackoverflow.com", "developer.mozilla.org"].includes(hostname)) {
+      return "reputable-secondary";
+    }
+  } catch {
+    return "unknown";
+  }
+  return "unknown";
+}
+
+export function classifyResearchFreshness(publicationDate: string | undefined, retrievedAt: string): ResearchFreshness {
+  if (!publicationDate) return "undated";
+  const published = Date.parse(publicationDate);
+  const retrieved = Date.parse(retrievedAt);
+  if (!Number.isFinite(published) || !Number.isFinite(retrieved) || published > retrieved) return "undated";
+  const ageDays = (retrieved - published) / 86_400_000;
+  if (ageDays <= 180) return "recent";
+  if (ageDays <= 730) return "dated";
+  return "stale";
+}
+
 export function deduplicateResearchFindings(findings: ResearchFinding[]) {
   const seen = new Set<string>();
   return findings.filter((finding) => {
@@ -45,7 +81,7 @@ export function deduplicateResearchFindings(findings: ResearchFinding[]) {
 }
 
 export function createSearchEvidence(
-  finding: Pick<ResearchFinding, "title" | "url" | "snippet" | "retrievedAt" | "provider">,
+  finding: Pick<ResearchFinding, "title" | "url" | "snippet" | "retrievedAt" | "provider" | "domain" | "publicationDate" | "query">,
   sourceId = stableResearchId("source", finding.url),
 ): { source: ResearchSource; evidence: ResearchEvidence } | null {
   const canonicalUrl = normalizeResearchUrl(finding.url);
@@ -56,6 +92,11 @@ export function createSearchEvidence(
     title: finding.title.trim().slice(0, 200),
     url: finding.url.trim(),
     canonicalUrl,
+    ...(finding.domain ? { domain: finding.domain } : {}),
+    ...(finding.publicationDate ? { publicationDate: finding.publicationDate } : {}),
+    ...(finding.query ? { query: finding.query } : {}),
+    quality: classifyResearchSourceQuality(canonicalUrl),
+    freshness: classifyResearchFreshness(finding.publicationDate, finding.retrievedAt),
     retrievedAt: finding.retrievedAt,
     provider: finding.provider,
     retrievalStatus: "snippet-only",
@@ -133,5 +174,87 @@ export function createResearchClaim(
         : "unverified",
     provenance,
     createdAt: new Date().toISOString(),
+  };
+}
+
+const CONTRADICTION_STOP_WORDS = new Set([
+  "about", "after", "also", "because", "been", "being", "does", "from", "have", "into", "more", "only", "that", "their", "there", "these", "they", "this", "those", "with",
+]);
+
+function assertionPolarity(text: string) {
+  const negative = /\b(?:does not|doesn't|do not|don't|cannot|can't|not supported|unsupported|incompatible|unavailable|deprecated|no longer|fails?)\b/i.test(text);
+  const positive = /\b(?:supports?|compatible|available|works?|allows?|enabled|recommended|can)\b/i.test(text);
+  return negative ? -1 : positive ? 1 : 0;
+}
+
+function topicTokens(text: string) {
+  return new Set(
+    text.toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, " ")
+      .split(/\s+/)
+      .filter((token) => token.length >= 4 && !CONTRADICTION_STOP_WORDS.has(token)),
+  );
+}
+
+function detectContradictions(evidence: ResearchEvidence[]): ResearchContradiction[] {
+  const contradictions: ResearchContradiction[] = [];
+  for (let leftIndex = 0; leftIndex < evidence.length; leftIndex += 1) {
+    const left = evidence[leftIndex];
+    const leftPolarity = assertionPolarity(left.text);
+    if (!leftPolarity) continue;
+    const leftTokens = topicTokens(left.text);
+    for (let rightIndex = leftIndex + 1; rightIndex < evidence.length; rightIndex += 1) {
+      const right = evidence[rightIndex];
+      if (left.sourceId === right.sourceId) continue;
+      const rightPolarity = assertionPolarity(right.text);
+      if (!rightPolarity || leftPolarity === rightPolarity) continue;
+      const sharedTokens = [...leftTokens].filter((token) => topicTokens(right.text).has(token));
+      if (sharedTokens.length < 1) continue;
+      const evidenceIds = [left.id, right.id];
+      contradictions.push({
+        id: stableResearchId("contradiction", evidenceIds.join(":")),
+        summary: `Potentially conflicting statements about ${sharedTokens.slice(0, 3).join(", ")}. Review both cited records before deciding.`,
+        evidenceIds,
+      });
+    }
+  }
+  return contradictions.slice(0, 12);
+}
+
+export function assessResearchEvidence(
+  sources: ResearchSource[],
+  evidence: ResearchEvidence[],
+  intent?: "current-facts" | "documentation" | "comparison" | "troubleshooting" | "general",
+  retrieval?: { pagesRetrieved: number; pagesFailed: number },
+): ResearchAssessment {
+  const sourceQuality: ResearchAssessment["sourceQuality"] = {};
+  for (const source of sources) {
+    const quality = source.quality ?? "unknown";
+    sourceQuality[quality] = (sourceQuality[quality] ?? 0) + 1;
+  }
+  const evidenceGaps: string[] = [];
+  if (!evidence.length) evidenceGaps.push("No evidence records were collected.");
+  if (evidence.length && !evidence.some((record) => record.kind === "retrieved-page")) {
+    evidenceGaps.push("No public page was retrieved; the available evidence is limited to search snippets.");
+  }
+  if (sources.some((source) => !source.quality || source.quality === "unknown")) {
+    evidenceGaps.push("Some sources could not be classified by domain, so source quality remains uncertain.");
+  }
+  if (sources.some((source) => !source.publicationDate || source.freshness === "undated")) {
+    evidenceGaps.push("Some sources have no reliable publication date; freshness could not be assessed.");
+  }
+  if (sources.some((source) => source.freshness === "stale")) {
+    evidenceGaps.push("At least one source is older than two years relative to retrieval; current claims need extra verification.");
+  }
+  if ((retrieval?.pagesFailed ?? 0) > 0) {
+    evidenceGaps.push(`${retrieval?.pagesFailed} public page retrieval attempt${retrieval?.pagesFailed === 1 ? "" : "s"} failed.`);
+  }
+  if (intent === "current-facts" && !sources.some((source) => source.freshness === "recent")) {
+    evidenceGaps.push("This current-facts question has no source classified as recent.");
+  }
+  return {
+    sourceQuality,
+    evidenceGaps: [...new Set(evidenceGaps)],
+    contradictions: detectContradictions(evidence),
   };
 }

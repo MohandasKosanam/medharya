@@ -16,6 +16,7 @@ export const PROVIDER_ERROR_REASONS = {
   rateLimit: "rate-limit",
   timeout: "timeout",
   transientError: "transient-error",
+  modelMissing: "model-missing",
   invalidResponse: "invalid-response",
 } as const;
 

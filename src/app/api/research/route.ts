@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 
-import { createResearchClaim, citationsForEvidence } from "@/lib/research/evidence";
-import { searchWithBrave } from "@/lib/research/brave";
-import { summarizeResearchWithModel } from "@/lib/research/summary";
-import { appendBranchMessage } from "@/lib/operating-system";
+import { normalizeResearchUrl } from "@/lib/research/evidence";
+import { runResearchQuery } from "@/lib/research/service";
+import { appendBranchMessage, ensureOperatingSystem } from "@/lib/operating-system";
 import {
   getCurrentUser,
   getOwnedProject,
@@ -11,7 +10,7 @@ import {
   updateOwnedProjectWorkspace,
 } from "@/lib/server/repository";
 import { appendResearchBundle, appendWorkspaceMessage, createStableId } from "@/lib/workspace";
-import type { ResearchClaim, ResearchResponse } from "@/types/research";
+import type { ResearchResponse } from "@/types/research";
 import type { WorkspaceMessage } from "@/types/workspace";
 
 const MAX_PROJECT_ID_LENGTH = 200;
@@ -21,32 +20,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function buildEvidenceSummary(response: ResearchResponse): ResearchResponse {
-  const evidence = response.evidence ?? [];
-  const sources = response.sources ?? [];
-  const claims: ResearchClaim[] = (response.findings ?? [])
-    .map((finding) => {
-      if (!finding.evidenceId) return null;
-      const evidenceRecord = evidence.find((item) => item.id === finding.evidenceId);
-      if (!evidenceRecord) return null;
-      return createResearchClaim(evidenceRecord.text.slice(0, 520), [evidenceRecord.id], evidence);
-    })
-    .filter((claim): claim is ResearchClaim => Boolean(claim));
-  const citations = citationsForEvidence(claims.flatMap((claim) => claim.evidenceIds), evidence, sources);
-  const summary = claims.length
-    ? [
-        "Source-backed research summary (not human-verified):",
-        ...claims.slice(0, 5).map((claim) => `• ${claim.text} [evidence:${claim.evidenceIds[0]}]`),
-      ].join("\n")
-    : undefined;
-  return {
-    ...response,
-    ...(claims.length ? { claims } : {}),
-    ...(citations.length ? { citations } : {}),
-    ...(summary ? { summary, summarySource: "deterministic-evidence" as const } : {}),
-  };
-}
-
 async function persistResearch(
   projectId: string,
   userId: string,
@@ -54,12 +27,22 @@ async function persistResearch(
   response: ResearchResponse,
 ) {
   const updated = await updateOwnedProjectWorkspace(projectId, userId, (currentWorkspace) => {
-    const next = appendResearchBundle(currentWorkspace, {
+    const normalizedWorkspace = ensureOperatingSystem(currentWorkspace);
+    const next = appendResearchBundle(normalizedWorkspace, {
       findings: response.findings,
       sources: response.sources,
       evidence: response.evidence,
       claims: response.claims,
+      assessment: response.assessment,
     });
+    const responseFindingIds = new Set(response.findings.map((finding) => finding.id));
+    const responseFindingUrls = new Set(response.findings.map((finding) => normalizeResearchUrl(finding.url)).filter((url): url is string => Boolean(url)));
+    const persistedFindingIds = next.researchFindings
+      .filter((finding) => {
+        const normalizedUrl = normalizeResearchUrl(finding.url);
+        return responseFindingIds.has(finding.id) || (normalizedUrl ? responseFindingUrls.has(normalizedUrl) : false);
+      })
+      .map((finding) => finding.id);
     const withBranchReferences = !branchId || !next.operatingSystem
       ? next
       : {
@@ -68,9 +51,9 @@ async function persistResearch(
             ...next.operatingSystem,
             branches: next.operatingSystem.branches.map((branch) =>
               branch.id === branchId
-                ? {
-                    ...branch,
-                    researchFindingIds: [...new Set([...branch.researchFindingIds, ...response.findings.map((finding) => finding.id)])].slice(-100),
+                  ? {
+                      ...branch,
+                    researchFindingIds: [...new Set([...branch.researchFindingIds, ...persistedFindingIds])].slice(-100),
                     updatedAt: next.updatedAt,
                   }
                 : branch,
@@ -124,13 +107,16 @@ export async function POST(request: Request) {
       if (!user) return NextResponse.json({ error: "Authentication is required for server-owned research." }, { status: 401 });
       const project = await getOwnedProject(projectId, user.id);
       if (!project) return NextResponse.json({ error: "Project not found." }, { status: 404 });
-      if (branchId && !project.workspace.operatingSystem?.branches.some((branch) => branch.id === branchId)) {
+      const workspace = ensureOperatingSystem(project.workspace);
+      if (branchId && !workspace.operatingSystem?.branches.some((branch) => branch.id === branchId && branch.workspaceId === projectId)) {
         return NextResponse.json({ error: "The requested project branch was not found." }, { status: 400 });
       }
       userId = user.id;
     }
 
-    const response = await summarizeResearchWithModel(query, buildEvidenceSummary(await searchWithBrave(query, requestedLimit)));
+    const response = await runResearchQuery(query, {
+      maxResultsPerSearch: requestedLimit,
+    });
     if (response.status === "available" && projectId && userId) {
       const workspace = await persistResearch(projectId, userId, branchId, response);
       if (!workspace) return NextResponse.json({ error: "Project not found." }, { status: 404 });

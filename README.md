@@ -43,8 +43,12 @@ ran.
 - Optional server-side anonymous-draft handoff, account signup/login, logout,
   expiring httpOnly sessions, and ownership-checked project routes.
 - Structured project operating-system records for discovery questions, branches,
-  branch conversations, task drafts, milestones, and manual-only automation
-  dry runs.
+  nested branch relationships, branch conversations, task drafts, milestones,
+  and manual-only automation dry runs.
+- An interactive browser-persisted SVG idea map with node selection, drag/pan,
+  zoom controls, direct branch connections, and reviewable relationship edges.
+- Server-aware branch chat and branch-scoped research context that can include
+  the selected branch, its parent chain, and explicitly related branches.
 
 This prototype does **not** claim live recommendations, current prices,
 verified compatibility, deployment, or human-verified web research. When the
@@ -134,6 +138,31 @@ It verifies the landing page, chat input validation, workspace route,
 recommendation differentiation, explicit live-research availability states,
 server-owned project chat persistence and idempotency, authentication
 boundaries, and cross-user isolation. It does not require an external provider.
+
+The bounded research engine can also be checked offline without a search key:
+
+```bash
+npm run test:research-engine
+```
+
+The workspace chat automatically classifies clearly current, documentation,
+comparison, and troubleshooting questions. When a question needs external
+evidence, it attempts bounded research before generating the answer. If live
+research is not configured or is unavailable, chat continues with an explicit
+notice and does not present the deterministic or model response as web research.
+Common credential-shaped values are redacted before a query is sent to an
+external research provider or model summarizer.
+
+The server-owned branch and cross-branch intelligence smoke check is:
+
+```bash
+MEDHARYA_BASE_URL=http://localhost:3000 MEDHARYA_DISABLE_EXTERNAL_PROVIDERS=1 node scripts/intelligence-smoke.mjs
+```
+
+It verifies nested branch persistence, canvas validation and deletion persistence,
+project-boundary validation, branch chat routing and persistence, concurrent chat
+idempotency, branch research references when research is available, and cross-user
+chat isolation.
 
 The provider adapter can be exercised against a local mock endpoint (including a
 transient failure and retry) with:
@@ -226,13 +255,14 @@ block in content is removed before the response reaches the frontend.
 For safety, the adapter accepts only loopback HTTP URLs (`localhost`,
 `127.0.0.1`, or `::1`) without credentials, query strings, or fragments. It
 does not send an API key to Ollama. Provider failures preserve the existing
-deterministic fallback and are reported as timeout, transient-error, or
-invalid-response states.
+deterministic fallback and are reported as timeout, transient-error,
+model-missing, or invalid-response states.
 
-The Ollama status route reports `configured` without making a separate health
-request. After a successful chat, the existing response status becomes
-`ready`. This keeps the current `/api/ai/status` and `/api/chat` contracts
-unchanged.
+The Ollama status route performs a server-side `/api/tags` health check and
+reports `ready` only when the daemon responds and the configured model is
+installed. A stopped daemon or missing model is reported as unavailable. The
+browser still receives only the existing `/api/ai/status` and `/api/chat`
+response contracts.
 
 On Windows PowerShell, start Ollama if it is not already running, confirm the
 model is present, then start Medharya:
@@ -399,7 +429,10 @@ the workspace adds no citations. With it, the server stores bounded search
 results as `search-snippet` evidence and attempts safe retrieval of up to three
 public HTML/text pages. Retrieved page evidence is marked separately from a
 snippet; failed or unsafe page retrieval never becomes a citation. Source-backed
-claims remain unverified until a person reviews the source.
+claims remain unverified until a person reviews the source. Research responses
+also preserve bounded source-quality/freshness classifications, report missing
+evidence such as undated or snippet-only results, and flag potentially
+conflicting evidence for review rather than silently choosing a side.
 
 For offline smoke tests, set `MEDHARYA_DISABLE_EXTERNAL_PROVIDERS=1`. This
 forces the standard routes to exercise deterministic/unavailable behavior even

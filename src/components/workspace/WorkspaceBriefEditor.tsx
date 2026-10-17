@@ -13,6 +13,8 @@ import {
 import type { WorkspaceRequestPatch } from "@/types/workspace";
 import {
   MAX_IDEA_LENGTH,
+  MAX_TECHNOLOGIES,
+  MAX_TECHNOLOGY_LENGTH,
   MAX_REQUIREMENTS_LENGTH,
   validateProjectDraft,
 } from "@/lib/validation";
@@ -32,8 +34,13 @@ export function WorkspaceBriefEditor({ request, onSave }: WorkspaceBriefEditorPr
   const [preferredTechnologies, setPreferredTechnologies] = useState(request.preferredTechnologies);
   const [deploymentPreference, setDeploymentPreference] = useState(request.deploymentPreference);
   const [additionalRequirements, setAdditionalRequirements] = useState(request.additionalRequirements);
+  const [customTechnology, setCustomTechnology] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+
+  const customTechnologies = preferredTechnologies.filter(
+    (technology) => !technologyOptions.some((option) => option === technology),
+  );
 
   function toggleTechnology(technology: string) {
     setSaved(false);
@@ -42,6 +49,18 @@ export function WorkspaceBriefEditor({ request, onSave }: WorkspaceBriefEditorPr
         ? current.filter((item) => item !== technology)
         : [...current, technology],
     );
+  }
+
+  function addCustomTechnology() {
+    const technology = customTechnology.trim();
+    if (
+      !technology ||
+      preferredTechnologies.length >= MAX_TECHNOLOGIES ||
+      preferredTechnologies.some((item) => item.toLocaleLowerCase() === technology.toLocaleLowerCase())
+    ) return;
+    setSaved(false);
+    setPreferredTechnologies((current) => [...current, technology]);
+    setCustomTechnology("");
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -124,6 +143,29 @@ export function WorkspaceBriefEditor({ request, onSave }: WorkspaceBriefEditorPr
                 </label>
               ))}
             </div>
+            <div className="workspace-custom-technology">
+              <input
+                type="text"
+                value={customTechnology}
+                maxLength={MAX_TECHNOLOGY_LENGTH}
+                placeholder="Add another technology preference"
+                aria-label="Add another technology preference"
+                onChange={(event) => { setSaved(false); setCustomTechnology(event.target.value); }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addCustomTechnology();
+                  }
+                }}
+              />
+              <button className="button button-secondary button-small" type="button" onClick={addCustomTechnology} disabled={!customTechnology.trim() || preferredTechnologies.length >= MAX_TECHNOLOGIES}>Add</button>
+            </div>
+            {customTechnologies.length ? (
+              <div className="workspace-custom-technology-list" aria-label="Custom technology preferences">
+                {customTechnologies.map((technology) => <button type="button" key={technology} onClick={() => toggleTechnology(technology)}>{technology} <span aria-hidden="true">×</span></button>)}
+              </div>
+            ) : null}
+            <small className="workspace-technology-limit">{preferredTechnologies.length}/{MAX_TECHNOLOGIES} preferences selected</small>
           </fieldset>
           <label className="workspace-editor-wide">
             Additional requirements

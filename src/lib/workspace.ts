@@ -1,5 +1,5 @@
 import type { ProjectRequest } from "@/types/project";
-import type { ResearchClaim, ResearchEvidence, ResearchFinding, ResearchSource } from "@/types/research";
+import type { ResearchAssessment, ResearchClaim, ResearchEvidence, ResearchFinding, ResearchSource } from "@/types/research";
 import type { WorkspaceMessage, ProjectMemory, ProjectWorkspace, WorkspaceRequestPatch } from "@/types/workspace";
 import { normalizeResearchUrl } from "./research/evidence";
 
@@ -64,7 +64,7 @@ export function createProjectWorkspace(request: ProjectRequest): ProjectWorkspac
   const welcome = [
     `I’ve captured your brief for “${projectName(request)}”.`,
     "",
-    "I’m starting with a rule-based baseline from the curated catalogue because no live AI provider is configured in this workspace.",
+    "I’m starting with a reviewable baseline from the curated catalogue. It is a decision aid, not a live AI recommendation or verified price quote.",
     `The initial direction is: ${plan.summary}`,
     "",
     plan.openQuestions.length
@@ -200,6 +200,7 @@ export function appendResearchBundle(
     sources?: ResearchSource[];
     evidence?: ResearchEvidence[];
     claims?: ResearchClaim[];
+    assessment?: ResearchAssessment;
   },
 ): ProjectWorkspace {
   const next = appendResearchFindings(workspace, bundle.findings);
@@ -214,5 +215,6 @@ export function appendResearchBundle(
     researchSources: [...sourceById.values()].slice(-100),
     researchEvidence: [...evidenceById.values()].slice(-100),
     researchClaims: [...claimById.values()].slice(-100),
+    ...(bundle.assessment ? { researchAssessment: bundle.assessment } : {}),
   };
 }

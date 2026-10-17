@@ -89,6 +89,18 @@ if (validChat.response.status !== 200 || typeof validChat.payload?.content !== "
   throw new Error("Context-aware chat smoke check failed.");
 }
 
+const greetingChat = await jsonRequest("/api/chat", { workspace, message: "hello" });
+if (
+  greetingChat.response.status !== 200
+  || greetingChat.payload?.source !== "deterministic-fallback"
+  || greetingChat.payload?.content !== "Hello! How can I help with your project today?"
+  || greetingChat.payload.content.includes(workspace.request.idea)
+  || greetingChat.payload.content.includes(workspace.plan.provenance)
+  || greetingChat.payload.content.includes(workspace.memory.openQuestions[0])
+) {
+  throw new Error("Natural greeting fallback smoke check failed.");
+}
+
 const [portfolioPlan, aiPlan] = await Promise.all([
   jsonRequest("/api/plan", portfolioRequest),
   jsonRequest("/api/plan", aiRequest),
@@ -97,6 +109,12 @@ const portfolioStack = portfolioPlan.payload?.plan?.stack?.map((item) => item.to
 const aiStack = aiPlan.payload?.plan?.stack?.map((item) => item.toolId).join(",");
 if (portfolioPlan.response.status !== 200 || aiPlan.response.status !== 200 || !portfolioStack || !aiStack || portfolioStack === aiStack) {
   throw new Error("Recommendation differentiation smoke check failed.");
+}
+if (portfolioPlan.payload?.fallback === true && portfolioPlan.payload?.provenance !== "deterministic-catalogue") {
+  throw new Error("Deterministic recommendation provenance check failed.");
+}
+if (portfolioPlan.payload?.fallback !== true && !["model-assisted", "ai-generated", "ai-plus-web-research"].includes(portfolioPlan.payload?.provenance)) {
+  throw new Error("Provider-backed recommendation provenance check failed.");
 }
 
 const research = await jsonRequest("/api/research", { query: "Next.js official documentation" });

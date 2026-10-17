@@ -1,5 +1,22 @@
 export type ResearchProvider = "brave-search";
 
+export type ResearchSourceQuality = "official-documentation" | "primary-source" | "reputable-secondary" | "unknown";
+export type ResearchFreshness = "recent" | "dated" | "stale" | "undated";
+
+export type ResearchIntent =
+  | "current-facts"
+  | "documentation"
+  | "comparison"
+  | "troubleshooting"
+  | "general";
+
+export interface ResearchIntentResult {
+  shouldResearch: boolean;
+  intent: ResearchIntent;
+  reason: string;
+  queries: string[];
+}
+
 export type ResearchEvidenceKind = "search-snippet" | "retrieved-page";
 
 export type ResearchEvidenceStatus =
@@ -18,6 +35,11 @@ export interface ResearchSource {
   title: string;
   url: string;
   canonicalUrl: string;
+  domain?: string;
+  publicationDate?: string;
+  query?: string;
+  quality?: ResearchSourceQuality;
+  freshness?: ResearchFreshness;
   retrievedAt: string;
   provider: ResearchProvider;
   retrievalStatus: ResearchEvidenceStatus;
@@ -35,6 +57,7 @@ export interface ResearchEvidence {
   verificationStatus: ResearchEvidenceStatus;
   contentType?: string;
   wordCount?: number;
+  headings?: string[];
 }
 
 export type ResearchClaimSupport = "supported" | "unverified" | "contradicted";
@@ -66,6 +89,9 @@ export interface ResearchFinding {
   retrievedAt: string;
   provider: ResearchProvider;
   verificationStatus: ResearchVerificationStatus;
+  domain?: string;
+  publicationDate?: string;
+  query?: string;
   sourceId?: string;
   evidenceId?: string;
   evidenceKind?: ResearchEvidenceKind;
@@ -80,6 +106,18 @@ export interface ResearchRetrievalStats {
   pagesFailed: number;
 }
 
+export interface ResearchContradiction {
+  id: string;
+  summary: string;
+  evidenceIds: string[];
+}
+
+export interface ResearchAssessment {
+  sourceQuality: Partial<Record<ResearchSourceQuality, number>>;
+  evidenceGaps: string[];
+  contradictions: ResearchContradiction[];
+}
+
 export interface ResearchResponse {
   status: "available" | "unavailable" | "error";
   provider?: ResearchProvider;
@@ -92,4 +130,6 @@ export interface ResearchResponse {
   summary?: string;
   summarySource?: "deterministic-evidence" | "model-assisted";
   retrieval?: ResearchRetrievalStats;
+  intent?: ResearchIntentResult;
+  assessment?: ResearchAssessment;
 }

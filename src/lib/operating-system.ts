@@ -2,6 +2,8 @@ import type { ProjectWorkspace } from "@/types/workspace";
 import type { SolutionPlan } from "@/types/solution";
 import type { WorkspaceMessage } from "@/types/workspace";
 import {
+  BRANCH_STATUSES,
+  BRANCH_TEMPLATES,
   DEFAULT_BRANCH_TEMPLATES,
   type ApprovalStatus,
   type AutomationDefinition,
@@ -10,6 +12,8 @@ import {
   type BranchEdge,
   type BranchEdgeRelationship,
   type BranchImpactSuggestion,
+  type CanvasPosition,
+  type CanvasViewport,
   type BranchTemplate,
   type DiscoveryAnswer,
   type DiscoveryContext,
@@ -26,6 +30,40 @@ import {
 } from "@/types/operating-system";
 
 const DEFAULT_TIMESTAMP = "1970-01-01T00:00:00.000Z";
+const BRANCH_EDGE_RELATIONSHIPS: readonly BranchEdgeRelationship[] = ["depends-on", "informs", "blocks", "related-to"];
+
+/** Keep persisted canvas state finite and bounded even when it comes from old local records. */
+export const CANVAS_COORDINATE_LIMIT = 100_000;
+export const CANVAS_MIN_ZOOM = 0.1;
+export const CANVAS_MAX_ZOOM = 4;
+
+function isFiniteInRange(value: unknown, minimum: number, maximum: number): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= maximum;
+}
+
+export function isValidCanvasPosition(value: unknown): value is CanvasPosition {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return isFiniteInRange(candidate.x, -CANVAS_COORDINATE_LIMIT, CANVAS_COORDINATE_LIMIT)
+    && isFiniteInRange(candidate.y, -CANVAS_COORDINATE_LIMIT, CANVAS_COORDINATE_LIMIT);
+}
+
+export function isValidCanvasViewport(value: unknown): value is CanvasViewport {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return isFiniteInRange(candidate.zoom, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM)
+    && isValidCanvasPosition(candidate.pan);
+}
+
+function normalizedCanvasPosition(value: unknown): CanvasPosition | undefined {
+  return isValidCanvasPosition(value) ? { x: value.x, y: value.y } : undefined;
+}
+
+function normalizedCanvasViewport(value: unknown): CanvasViewport | undefined {
+  return isValidCanvasViewport(value)
+    ? { zoom: value.zoom, pan: { x: value.pan.x, y: value.pan.y } }
+    : undefined;
+}
 
 function slug(value: string) {
   return value
@@ -47,12 +85,65 @@ function uniqueId(base: string, used: Set<string>) {
 }
 
 function nonEmpty(value: string | undefined, fallback: string) {
-  const trimmed = value?.trim();
+  const trimmed = typeof value === "string" ? value.trim() : "";
   return trimmed || fallback;
 }
 
 function templateDefinition(template: BranchTemplate) {
   return DEFAULT_BRANCH_TEMPLATES.find((item) => item.template === template) ?? DEFAULT_BRANCH_TEMPLATES[0];
+}
+
+function branchTemplate(value: unknown): BranchTemplate {
+  return BRANCH_TEMPLATES.includes(value as BranchTemplate) ? value as BranchTemplate : "development-architecture";
+}
+
+function branchStatus(value: unknown): ProjectBranch["status"] {
+  return BRANCH_STATUSES.includes(value as ProjectBranch["status"]) ? value as ProjectBranch["status"] : "active";
+}
+
+function provenance(value: unknown, fallback: OperatingSystemProvenance): OperatingSystemProvenance {
+  return value === "user" || value === "system" || value === "deterministic" || value === "model-assisted" || value === "web-researched" || value === "imported"
+    ? value
+    : fallback;
+}
+
+function approvalStatus(value: unknown): ApprovalStatus {
+  return value === "approved" || value === "rejected" || value === "pending" ? value : "pending";
+}
+
+function normalizeBranchEdges(value: unknown, trustedBranchIds: Set<string>): BranchEdge[] {
+  if (!Array.isArray(value)) return [];
+  const usedIds = new Set<string>();
+  return value.flatMap((candidate, index) => {
+    if (typeof candidate !== "object" || candidate === null) return [];
+    const source = candidate as Record<string, unknown>;
+    const id = typeof source.id === "string" && source.id.trim()
+      ? source.id.trim()
+      : `edge-${index + 1}`;
+    const fromBranchId = typeof source.fromBranchId === "string" ? source.fromBranchId.trim() : "";
+    const toBranchId = typeof source.toBranchId === "string" ? source.toBranchId.trim() : "";
+    const relationship = source.relationship as BranchEdgeRelationship;
+    if (
+      !trustedBranchIds.has(fromBranchId) ||
+      !trustedBranchIds.has(toBranchId) ||
+      fromBranchId === toBranchId ||
+      !BRANCH_EDGE_RELATIONSHIPS.includes(relationship) ||
+      (source.status !== "active" && source.status !== "archived")
+    ) return [];
+    const normalizedId = uniqueId(id, usedIds);
+    usedIds.add(normalizedId);
+    return [{
+      ...source,
+      id: normalizedId,
+      fromBranchId,
+      toBranchId,
+      relationship,
+      status: source.status,
+      provenance: provenance(source.provenance, "user"),
+      approvalStatus: approvalStatus(source.approvalStatus),
+      rationale: typeof source.rationale === "string" ? source.rationale : "",
+    } as BranchEdge];
+  });
 }
 
 function branchWelcome(branchName: string, description: string): WorkspaceMessage {
@@ -87,12 +178,17 @@ export function createDefaultBranches(workspace: ProjectWorkspace): ProjectBranc
 }
 
 export function createBranch(branches: ProjectBranch[], draft: BranchDraft): ProjectBranch {
-  const template = draft.template ?? "development-architecture";
+  const template = branchTemplate(draft.template ?? "development-architecture");
   const definition = templateDefinition(template);
   const workspaceId = draft.workspaceId ?? branches[0]?.workspaceId ?? "workspace";
   const baseId = draft.id ?? stableId(`${workspaceId}-branch`, draft.name);
   const id = uniqueId(baseId, new Set(branches.map((branch) => branch.id)));
   const timestamp = draft.timestamp ?? DEFAULT_TIMESTAMP;
+  const parentBranchId = typeof draft.parentBranchId === "string" ? draft.parentBranchId.trim() : "";
+  const parent = parentBranchId
+    ? branches.find((branch) => branch.id === parentBranchId && branch.workspaceId === workspaceId)
+    : undefined;
+  const canvasPosition = normalizedCanvasPosition(draft.canvasPosition);
 
   return {
     id,
@@ -103,6 +199,8 @@ export function createBranch(branches: ProjectBranch[], draft: BranchDraft): Pro
     status: draft.status ?? "active",
     provenance: draft.provenance ?? "user",
     approvalStatus: draft.approvalStatus ?? "pending",
+    ...(parent && parent.id !== id ? { parentBranchId: parent.id } : {}),
+    ...(canvasPosition ? { canvasPosition } : {}),
     messages: [],
     requirements: [],
     researchFindingIds: [],
@@ -161,27 +259,363 @@ export function initializeOperatingSystem(workspace: ProjectWorkspace): ProjectO
 
 export function ensureOperatingSystem(workspace: ProjectWorkspace): ProjectWorkspace {
   const existing = workspace.operatingSystem;
-  if (existing && Array.isArray(existing.branchImpactSuggestions) && existing.branches.every((branch) => Array.isArray(branch.messages))) {
-    return workspace;
-  }
-
   const baseline = initializeOperatingSystem(workspace);
+  const sourceBranches = existing && Array.isArray(existing.branches) && existing.branches.length > 0
+    ? existing.branches
+    : baseline.branches;
+  const usedBranchIds = new Set<string>();
+  const normalizedBranches = sourceBranches.map((source, index) => {
+    const sourceRecord = source as unknown as Record<string, unknown>;
+    const template = branchTemplate(source.template);
+    const definition = templateDefinition(template);
+    const sourceName = typeof source.name === "string" ? source.name : "";
+    const sourceId = typeof source.id === "string" && source.id.trim() ? source.id.trim() : `${workspace.id}-branch-${slug(sourceName || `branch-${index + 1}`)}`;
+    const id = uniqueId(sourceId, usedBranchIds);
+    usedBranchIds.add(id);
+    const sourceWorkspaceId = typeof source.workspaceId === "string" && source.workspaceId.trim() ? source.workspaceId : workspace.id;
+    const canvasPosition = normalizedCanvasPosition(sourceRecord.canvasPosition);
+    const sourceWithoutCanvasPosition = { ...source };
+    delete sourceWithoutCanvasPosition.canvasPosition;
+    return {
+      ...sourceWithoutCanvasPosition,
+      id,
+      workspaceId: sourceWorkspaceId,
+      name: nonEmpty(source.name, definition.name),
+      template,
+      description: nonEmpty(source.description, definition.description),
+      status: branchStatus(source.status),
+      provenance: provenance(source.provenance, "user"),
+      approvalStatus: approvalStatus(source.approvalStatus),
+      parentBranchId: typeof source.parentBranchId === "string" && source.parentBranchId.trim() ? source.parentBranchId.trim() : undefined,
+      messages: Array.isArray(source.messages) ? source.messages : [],
+      requirements: Array.isArray(source.requirements) ? source.requirements.filter((item): item is string => typeof item === "string") : [],
+      researchFindingIds: Array.isArray(source.researchFindingIds) ? source.researchFindingIds.filter((item): item is string => typeof item === "string") : [],
+      decisionIds: Array.isArray(source.decisionIds) ? source.decisionIds.filter((item): item is string => typeof item === "string") : [],
+      taskIds: Array.isArray(source.taskIds) ? source.taskIds.filter((item): item is string => typeof item === "string") : [],
+      createdAt: typeof source.createdAt === "string" && source.createdAt ? source.createdAt : workspace.createdAt || DEFAULT_TIMESTAMP,
+      updatedAt: typeof source.updatedAt === "string" && source.updatedAt ? source.updatedAt : workspace.updatedAt || workspace.createdAt || DEFAULT_TIMESTAMP,
+      ...(canvasPosition ? { canvasPosition } : {}),
+    } satisfies ProjectBranch;
+  });
+
+  // Only branches belonging to this workspace may become trusted parents. A
+  // malformed legacy record can still be returned for inspection, but its
+  // parent link is detached rather than allowing a foreign record into context.
+  const trustedBranchIds = new Set(
+    normalizedBranches.filter((branch) => branch.workspaceId === workspace.id).map((branch) => branch.id),
+  );
+  const sourceBranchWorkspaceById = new Map<string, string | null>();
+  sourceBranches.forEach((source, index) => {
+    const sourceId = typeof source.id === "string" ? source.id.trim() : "";
+    const normalizedBranch = normalizedBranches[index];
+    if (!sourceId || !normalizedBranch) return;
+    const previousWorkspaceId = sourceBranchWorkspaceById.get(sourceId);
+    if (previousWorkspaceId === undefined) {
+      sourceBranchWorkspaceById.set(sourceId, normalizedBranch.workspaceId);
+    } else if (previousWorkspaceId !== normalizedBranch.workspaceId) {
+      sourceBranchWorkspaceById.set(sourceId, null);
+    }
+  });
+  const trustedSourceBranchIds = new Map<string, string>();
+  sourceBranches.forEach((source, index) => {
+    const normalizedBranch = normalizedBranches[index];
+    if (!normalizedBranch || normalizedBranch.workspaceId !== workspace.id) return;
+    const sourceId = typeof source.id === "string" ? source.id.trim() : "";
+    if (sourceId && sourceBranchWorkspaceById.get(sourceId) === workspace.id && !trustedSourceBranchIds.has(sourceId)) {
+      trustedSourceBranchIds.set(sourceId, normalizedBranch.id);
+    }
+  });
+  const branchesWithTrustedParents = normalizedBranches.map((branch) => {
+    const rawParentId = typeof branch.parentBranchId === "string" ? branch.parentBranchId.trim() : "";
+    const parentId = branch.workspaceId === workspace.id
+      ? trustedSourceBranchIds.get(rawParentId) ?? (trustedBranchIds.has(rawParentId) ? rawParentId : "")
+      : "";
+    return parentId && parentId !== branch.id
+      ? { ...branch, parentBranchId: parentId }
+      : { ...branch, parentBranchId: undefined };
+  });
+  const parentById = new Map(branchesWithTrustedParents.map((branch) => [branch.id, branch]));
+  const branches = branchesWithTrustedParents.map((branch) => {
+    if (!branch.parentBranchId) return branch;
+    const seen = new Set<string>([branch.id]);
+    let parentId: string | undefined = branch.parentBranchId;
+    while (parentId) {
+      if (seen.has(parentId)) return { ...branch, parentBranchId: undefined };
+      seen.add(parentId);
+      const parent = parentById.get(parentId);
+      if (!parent || parent.workspaceId !== workspace.id) return { ...branch, parentBranchId: undefined };
+      parentId = parent.parentBranchId;
+    }
+    return branch;
+  });
+  const branchIdByTemplate = new Map<string, string>();
+  sourceBranches.forEach((source, index) => {
+    const normalizedBranch = branches[index];
+    if (!normalizedBranch || normalizedBranch.workspaceId !== workspace.id) return;
+    if (typeof source.template === "string") branchIdByTemplate.set(source.template, normalizedBranch.id);
+    branchIdByTemplate.set(normalizedBranch.template, normalizedBranch.id);
+  });
+  const sourceTasks = existing && Array.isArray(existing.tasks) ? existing.tasks : baseline.tasks;
+  const tasks = sourceTasks.map((task) => {
+    const branchId = typeof task.branchId === "string" ? task.branchId : "";
+    const migratedBranchId = trustedBranchIds.has(branchId) ? branchId : branchIdByTemplate.get(branchId);
+    return {
+      ...task,
+      ...(migratedBranchId && migratedBranchId !== branchId ? { branchId: migratedBranchId } : {}),
+      dependencyIds: Array.isArray(task.dependencyIds) ? task.dependencyIds.filter((item): item is string => typeof item === "string") : [],
+      blockedBy: Array.isArray(task.blockedBy) ? task.blockedBy.filter((item): item is string => typeof item === "string") : [],
+    };
+  });
+
+  const existingRecord = existing as unknown as Record<string, unknown> | undefined;
+  const existingWithoutCanvasViewport: Partial<ProjectOperatingSystem> = existing ? { ...existing } : {};
+  delete existingWithoutCanvasViewport.viewport;
+  delete existingWithoutCanvasViewport.canvasViewport;
+  const viewport = normalizedCanvasViewport(existingRecord?.viewport)
+    ?? normalizedCanvasViewport(existingRecord?.canvasViewport);
+  const milestones = Array.isArray(existing?.milestones)
+    ? existing.milestones.map((milestone) => ({
+        ...milestone,
+        taskIds: Array.isArray(milestone.taskIds) ? milestone.taskIds.filter((item): item is string => typeof item === "string") : [],
+      }))
+    : baseline.milestones;
+  const decisions = Array.isArray(existing?.decisions)
+    ? existing.decisions.map((decision) => ({
+        ...decision,
+        relatedBranchIds: Array.isArray(decision.relatedBranchIds)
+          ? decision.relatedBranchIds.filter((item): item is string => typeof item === "string")
+          : [],
+      }))
+    : baseline.decisions;
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const decisionIds = new Set(decisions.map((decision) => decision.id));
+  const branchesWithSafeReferences = branches.map((branch) => ({
+    ...branch,
+    taskIds: branch.taskIds.filter((taskId) => taskIds.has(taskId)),
+    decisionIds: branch.decisionIds.filter((decisionId) => decisionIds.has(decisionId)),
+  }));
+  const edges = normalizeBranchEdges(existing?.edges ?? baseline.edges, new Set(branchesWithSafeReferences.map((branch) => branch.id).filter((id) => trustedBranchIds.has(id))));
+
   return {
     ...workspace,
     operatingSystem: {
       ...baseline,
-      ...existing,
-      branchImpactSuggestions: existing?.branchImpactSuggestions ?? [],
-      branches: existing?.branches?.map((branch) => ({
-        ...baseline.branches.find((candidate) => candidate.id === branch.id),
-        ...branch,
-        messages: branch.messages ?? [],
-        requirements: branch.requirements ?? [],
-        researchFindingIds: branch.researchFindingIds ?? [],
-        decisionIds: branch.decisionIds ?? [],
-        taskIds: branch.taskIds ?? [],
-      })) ?? baseline.branches,
+      ...existingWithoutCanvasViewport,
+      branchImpactSuggestions: Array.isArray(existing?.branchImpactSuggestions) ? existing.branchImpactSuggestions : [],
+      branches: branchesWithSafeReferences,
+      edges,
+      tasks,
+      milestones,
+      automations: Array.isArray(existing?.automations) ? existing.automations : baseline.automations,
+      automationRuns: Array.isArray(existing?.automationRuns) ? existing.automationRuns : baseline.automationRuns,
+      discoveryQuestions: Array.isArray(existing?.discoveryQuestions) ? existing.discoveryQuestions : baseline.discoveryQuestions,
+      discoveryAnswers: Array.isArray(existing?.discoveryAnswers) ? existing.discoveryAnswers : baseline.discoveryAnswers,
+      decisions,
+      preferences: existing?.preferences ?? baseline.preferences,
+      ...(viewport ? { viewport } : {}),
     },
+  };
+}
+
+/**
+ * Return the active branch followed by its parent chain and one-hop connected
+ * branches. Invalid or stale references are ignored so legacy records remain
+ * readable without turning untrusted IDs into context.
+ */
+export function getBranchContextBranches(
+  operatingSystem: ProjectOperatingSystem,
+  branchId: string,
+): ProjectBranch[] {
+  const active = operatingSystem.branches.find((branch) => branch.id === branchId);
+  if (!active) return [];
+  const byId = new Map(
+    operatingSystem.branches
+      .filter((branch) => branch.workspaceId === active.workspaceId)
+      .map((branch) => [branch.id, branch]),
+  );
+  if (!byId.has(active.id)) return [];
+
+  const orderedIds: string[] = [];
+  const seen = new Set<string>();
+  const add = (id: string) => {
+    if (!seen.has(id) && byId.has(id)) {
+      seen.add(id);
+      orderedIds.push(id);
+    }
+  };
+
+  let current: ProjectBranch | undefined = active;
+  while (current) {
+    add(current.id);
+    if (!current.parentBranchId || current.parentBranchId === current.id || seen.has(current.parentBranchId)) break;
+    current = byId.get(current.parentBranchId);
+  }
+
+  const parentAndActiveIds = new Set(orderedIds);
+  for (const edge of operatingSystem.edges) {
+    if (edge.status !== "active") continue;
+    if (parentAndActiveIds.has(edge.fromBranchId)) add(edge.toBranchId);
+    if (parentAndActiveIds.has(edge.toBranchId)) add(edge.fromBranchId);
+  }
+
+  return orderedIds.map((id) => byId.get(id)).filter((branch): branch is ProjectBranch => Boolean(branch));
+}
+
+export type BranchEdgeUpdate = Partial<Pick<
+  BranchEdge,
+  "fromBranchId" | "toBranchId" | "relationship" | "status" | "provenance" | "approvalStatus" | "rationale"
+>>;
+
+/**
+ * Remove a branch and all of its descendants without leaving references to
+ * deleted tasks, milestones, decisions, or edges. Research evidence lives on
+ * the workspace, so it is deliberately not touched by this helper.
+ */
+export function removeBranchTree(
+  operatingSystem: ProjectOperatingSystem,
+  branchId: string,
+): ProjectOperatingSystem {
+  const root = operatingSystem.branches.find((branch) => branch.id === branchId);
+  if (!root) return operatingSystem;
+
+  const removedBranchIds = new Set<string>([root.id]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const branch of operatingSystem.branches) {
+      if (
+        branch.workspaceId === root.workspaceId &&
+        branch.parentBranchId &&
+        removedBranchIds.has(branch.parentBranchId) &&
+        !removedBranchIds.has(branch.id)
+      ) {
+        removedBranchIds.add(branch.id);
+        changed = true;
+      }
+    }
+  }
+
+  const survivingBranches = operatingSystem.branches.filter((branch) => !removedBranchIds.has(branch.id));
+  const survivingBranchIds = new Set(survivingBranches.map((branch) => branch.id));
+  const removedTaskIds = new Set(
+    operatingSystem.tasks
+      .filter((task) => removedBranchIds.has(task.branchId))
+      .map((task) => task.id),
+  );
+  const survivingTasks = operatingSystem.tasks.filter(
+    (task) => survivingBranchIds.has(task.branchId) && !removedTaskIds.has(task.id),
+  );
+  const survivingTaskIds = new Set(survivingTasks.map((task) => task.id));
+  const survivingMilestones = operatingSystem.milestones
+    .filter((milestone) => survivingBranchIds.has(milestone.branchId))
+    .map((milestone) => ({
+      ...milestone,
+      taskIds: milestone.taskIds.filter((taskId) => survivingTaskIds.has(taskId)),
+    }));
+  const survivingMilestoneIds = new Set(survivingMilestones.map((milestone) => milestone.id));
+  const survivingDecisionIds = new Set(operatingSystem.decisions.map((decision) => decision.id));
+  const branches = survivingBranches.map((branch) => ({
+    ...branch,
+    parentBranchId: branch.parentBranchId && survivingBranchIds.has(branch.parentBranchId)
+      ? branch.parentBranchId
+      : undefined,
+    taskIds: branch.taskIds.filter((taskId) => survivingTaskIds.has(taskId)),
+    decisionIds: branch.decisionIds.filter((decisionId) => survivingDecisionIds.has(decisionId)),
+  }));
+  const tasks = survivingTasks.map((task) => ({
+    ...task,
+    dependencyIds: task.dependencyIds.filter((dependencyId) => survivingTaskIds.has(dependencyId)),
+    blockedBy: task.blockedBy.filter((taskId) => survivingTaskIds.has(taskId)),
+    ...(task.milestoneId && survivingMilestoneIds.has(task.milestoneId)
+      ? { milestoneId: task.milestoneId }
+      : { milestoneId: undefined }),
+  }));
+  const decisions = operatingSystem.decisions.map((decision) => ({
+    ...decision,
+    relatedBranchIds: decision.relatedBranchIds.filter((relatedBranchId) => survivingBranchIds.has(relatedBranchId)),
+  }));
+
+  return {
+    ...operatingSystem,
+    branches,
+    edges: operatingSystem.edges.filter(
+      (edge) => survivingBranchIds.has(edge.fromBranchId) && survivingBranchIds.has(edge.toBranchId),
+    ),
+    tasks,
+    milestones: survivingMilestones,
+    decisions,
+    branchImpactSuggestions: operatingSystem.branchImpactSuggestions.filter(
+      (suggestion) => survivingBranchIds.has(suggestion.branchId),
+    ),
+  };
+}
+
+/** Update one edge only when its new endpoints remain valid and same-project. */
+export function updateBranchEdge(
+  operatingSystem: ProjectOperatingSystem,
+  edgeId: string,
+  update: BranchEdgeUpdate,
+): ProjectOperatingSystem {
+  const edge = operatingSystem.edges.find((candidate) => candidate.id === edgeId);
+  if (!edge) return operatingSystem;
+
+  const fromBranchId = update.fromBranchId ?? edge.fromBranchId;
+  const toBranchId = update.toBranchId ?? edge.toBranchId;
+  const relationship = update.relationship ?? edge.relationship;
+  const status = update.status ?? edge.status;
+  const provenanceValue = update.provenance ?? edge.provenance;
+  const approvalValue = update.approvalStatus ?? edge.approvalStatus;
+  const rationale = update.rationale ?? edge.rationale;
+  const fromBranch = operatingSystem.branches.find((branch) => branch.id === fromBranchId);
+  const toBranch = operatingSystem.branches.find((branch) => branch.id === toBranchId);
+  if (
+    typeof fromBranchId !== "string" || !fromBranchId.trim() ||
+    typeof toBranchId !== "string" || !toBranchId.trim() ||
+    fromBranchId === toBranchId ||
+    !fromBranch || !toBranch || fromBranch.workspaceId !== toBranch.workspaceId ||
+    !BRANCH_EDGE_RELATIONSHIPS.includes(relationship) ||
+    (status !== "active" && status !== "archived") ||
+    (provenanceValue !== "user" && provenanceValue !== "system" && provenanceValue !== "deterministic" && provenanceValue !== "model-assisted" && provenanceValue !== "web-researched" && provenanceValue !== "imported") ||
+    (approvalValue !== "approved" && approvalValue !== "rejected" && approvalValue !== "pending") ||
+    typeof rationale !== "string"
+  ) {
+    return operatingSystem;
+  }
+
+  const duplicate = status === "active" && operatingSystem.edges.some(
+    (candidate) => candidate.id !== edgeId &&
+      candidate.status === "active" &&
+      candidate.fromBranchId === fromBranchId &&
+      candidate.toBranchId === toBranchId &&
+      candidate.relationship === relationship,
+  );
+  if (duplicate) return operatingSystem;
+
+  const updatedEdge: BranchEdge = {
+    ...edge,
+    fromBranchId,
+    toBranchId,
+    relationship,
+    status,
+    provenance: provenanceValue,
+    approvalStatus: approvalValue,
+    rationale: rationale.trim(),
+  };
+  return {
+    ...operatingSystem,
+    edges: operatingSystem.edges.map((candidate) => candidate.id === edgeId ? updatedEdge : candidate),
+  };
+}
+
+/** Remove an edge by id without touching branches or shared research records. */
+export function removeBranchEdge(
+  operatingSystem: ProjectOperatingSystem,
+  edgeId: string,
+): ProjectOperatingSystem {
+  if (!operatingSystem.edges.some((edge) => edge.id === edgeId)) return operatingSystem;
+  return {
+    ...operatingSystem,
+    edges: operatingSystem.edges.filter((edge) => edge.id !== edgeId),
   };
 }
 
@@ -228,7 +662,7 @@ export function connectBranches(
   provenance: OperatingSystemProvenance = "user",
   approvalStatus: ApprovalStatus = "pending",
 ): BranchEdge[] {
-  if (!fromBranchId || !toBranchId || fromBranchId === toBranchId) return edges;
+  if (!fromBranchId || !toBranchId || fromBranchId === toBranchId || !BRANCH_EDGE_RELATIONSHIPS.includes(relationship)) return edges;
   const duplicate = edges.some(
     (edge) =>
       edge.status === "active" &&

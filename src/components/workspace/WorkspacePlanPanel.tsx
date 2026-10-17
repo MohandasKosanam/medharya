@@ -13,6 +13,7 @@ export function WorkspacePlanPanel({ workspace, researchState, researchMessage, 
   const { plan } = workspace;
   const researchEvidence = workspace.researchEvidence ?? [];
   const researchClaims = workspace.researchClaims ?? [];
+  const researchAssessment = workspace.researchAssessment;
   return (
     <aside className="workspace-plan-panel" aria-labelledby="workspace-plan-title">
       <div className="workspace-plan-header">
@@ -64,6 +65,8 @@ export function WorkspacePlanPanel({ workspace, researchState, researchMessage, 
         </button>
         {workspace.researchFindings.length ? <div className="research-results">{workspace.researchFindings.slice(-4).map((finding) => <a href={finding.url} target="_blank" rel="noreferrer" key={finding.id}><strong>{finding.title}</strong><small>{finding.snippet || finding.url}</small><span>{finding.pageRetrieved ? "public page retrieved" : "search snippet only"} · {finding.verificationStatus} · {new Date(finding.retrievedAt).toLocaleDateString()}</span>{finding.retrievalError ? <em>{finding.retrievalError}</em> : null}</a>)}</div> : null}
         {researchClaims.length ? <div className="research-claims"><strong>Evidence-backed claims</strong><ul>{researchClaims.slice(-4).map((claim) => <li key={claim.id}><span>{claim.supportStatus}</span> {claim.text}</li>)}</ul></div> : null}
+        {researchAssessment?.evidenceGaps.length ? <div className="research-claims"><strong>Evidence gaps</strong><ul>{researchAssessment.evidenceGaps.slice(0, 4).map((gap) => <li key={gap}>{gap}</li>)}</ul></div> : null}
+        {researchAssessment?.contradictions.length ? <div className="research-claims"><strong>Potential conflicts</strong><ul>{researchAssessment.contradictions.slice(0, 3).map((item) => <li key={item.id}>{item.summary}</li>)}</ul></div> : null}
       </section>
 
       <section className="plan-subsection compact-plan-section">

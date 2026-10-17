@@ -7,6 +7,7 @@ import {
 } from "@/types/project";
 
 export const PROJECT_DRAFT_STORAGE_KEY = "medharya:project-draft:v1";
+export const ANONYMOUS_DRAFT_ID_STORAGE_KEY = "medharya:anonymous-draft-id:v1";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -74,6 +75,39 @@ export function clearProjectDraft(): boolean {
 
   try {
     window.localStorage.removeItem(PROJECT_DRAFT_STORAGE_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function loadAnonymousDraftId(): string | null {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const value = window.localStorage.getItem(ANONYMOUS_DRAFT_ID_STORAGE_KEY)?.trim() ?? "";
+    return value.length > 0 && value.length <= 200 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveAnonymousDraftId(id: string): boolean {
+  if (typeof window === "undefined" || id.trim().length === 0 || id.trim().length > 200) return false;
+
+  try {
+    window.localStorage.setItem(ANONYMOUS_DRAFT_ID_STORAGE_KEY, id.trim());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearAnonymousDraftId(): boolean {
+  if (typeof window === "undefined") return false;
+
+  try {
+    window.localStorage.removeItem(ANONYMOUS_DRAFT_ID_STORAGE_KEY);
     return true;
   } catch {
     return false;

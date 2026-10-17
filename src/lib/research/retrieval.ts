@@ -31,10 +31,13 @@ export class PageRetrievalError extends Error {
 export interface RetrievedPage {
   requestedUrl: string;
   finalUrl: string;
+  canonicalUrl: string;
   title: string;
   text: string;
   contentType: string;
   wordCount: number;
+  headings: string[];
+  publicationDate?: string;
 }
 
 export type HostResolver = (hostname: string) => Promise<string[]>;
@@ -53,8 +56,27 @@ function privateIpv4(address: string) {
 
 function privateIpv6(address: string) {
   const normalized = address.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
-  if (normalized === "::" || normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb")) return true;
-  if (normalized.startsWith("::ffff:")) return privateIpv4(normalized.slice(7));
+  if (
+    normalized === "::" ||
+    normalized === "::1" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    normalized.startsWith("fe8") ||
+    normalized.startsWith("fe9") ||
+    normalized.startsWith("fea") ||
+    normalized.startsWith("feb") ||
+    normalized.startsWith("ff")
+  ) return true;
+  if (normalized.startsWith("::ffff:")) {
+    const mapped = normalized.slice(7);
+    if (mapped.includes(".")) return privateIpv4(mapped);
+    const groups = mapped.split(":");
+    if (groups.length === 2 && groups.every((group) => /^[0-9a-f]{1,4}$/.test(group))) {
+      const high = Number.parseInt(groups[0], 16);
+      const low = Number.parseInt(groups[1], 16);
+      return privateIpv4(`${high >>> 8}.${high & 255}.${low >>> 8}.${low & 255}`);
+    }
+  }
   return false;
 }
 
@@ -65,7 +87,12 @@ function privateAddress(address: string) {
 function parseHttpUrl(value: string) {
   try {
     const url = new URL(value.trim());
-    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password || !url.hostname) {
+    if (
+      (url.protocol !== "https:" && url.protocol !== "http:") ||
+      url.username ||
+      url.password ||
+      !url.hostname
+    ) {
       throw new PageRetrievalError("invalid-url", "Only credential-free HTTP(S) URLs can be retrieved.");
     }
     return url;
@@ -78,15 +105,24 @@ function parseHttpUrl(value: string) {
 export async function assertSafePublicUrl(value: string, resolveHost: HostResolver = defaultResolveHost) {
   const url = parseHttpUrl(value);
   const hostname = url.hostname.toLowerCase();
-  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || hostname.endsWith(".internal")) {
+  if (
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname.endsWith(".local") ||
+    hostname.endsWith(".internal") ||
+    hostname === "metadata.google.internal" ||
+    hostname === "instance-data.ec2.internal"
+  ) {
     throw new PageRetrievalError("blocked-host", "Local and internal hosts are not eligible for page retrieval.");
   }
-
   const addresses = isIP(hostname) ? [hostname] : await resolveHost(hostname).catch(() => {
     throw new PageRetrievalError("dns-failed", "The research result host could not be resolved safely.");
   });
   if (!addresses.length || addresses.some(privateAddress)) {
     throw new PageRetrievalError("blocked-host", "The research result resolves to a private or reserved network.");
+  }
+  if (url.port && url.port !== "80" && url.port !== "443") {
+    throw new PageRetrievalError("invalid-url", "Only standard HTTP(S) ports are eligible for page retrieval.");
   }
   return url;
 }
@@ -154,6 +190,38 @@ function pageTitle(html: string, fallback: string) {
   return title.slice(0, 200) || fallback;
 }
 
+function pageCanonicalUrl(html: string, fallback: string) {
+  const match = html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>/i)
+    ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical[^"']*["'][^>]*>/i);
+  if (!match?.[1]) return fallback;
+  try {
+    const parsed = new URL(decodeEntities(match[1]), fallback);
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return fallback;
+  }
+}
+
+function pagePublicationDate(html: string) {
+  const candidates = [
+    html.match(/<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished|date|published_time)["'][^>]+content=["']([^"']+)["'][^>]*>/i)?.[1],
+    html.match(/<time[^>]+datetime=["']([^"']+)["'][^>]*>/i)?.[1],
+  ].filter((value): value is string => Boolean(value));
+  for (const candidate of candidates) {
+    const parsed = Date.parse(candidate);
+    if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+  }
+  return undefined;
+}
+
+function pageHeadings(html: string) {
+  return [...html.matchAll(/<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/gi)]
+    .map((match) => decodeEntities(match[1].replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
 export function extractReadableText(raw: string, contentType: string) {
   const isHtml = contentType.toLowerCase().includes("html");
   const withoutNoise = isHtml
@@ -206,13 +274,17 @@ export async function retrievePublicPage(
     const rawText = decodeText(await bodyBytes(response));
     const text = extractReadableText(rawText, contentType);
     if (!text) throw new PageRetrievalError("unreadable", "The public page did not contain readable text.");
+    const publicationDate = pagePublicationDate(rawText);
     return {
       requestedUrl,
       finalUrl: safeUrl.toString(),
+      canonicalUrl: pageCanonicalUrl(rawText, safeUrl.toString()),
       title: pageTitle(rawText, safeUrl.hostname),
       text,
       contentType,
       wordCount: text.split(/\s+/).filter(Boolean).length,
+      headings: pageHeadings(rawText),
+      ...(publicationDate ? { publicationDate } : {}),
     };
   }
 

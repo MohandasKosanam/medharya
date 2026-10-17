@@ -1,6 +1,7 @@
 node_modules
 .next
 .git
+.opencode
 .env*
 !.env.example
 npm-debug.log*
@@ -13,3 +14,4 @@ training/checkpoints
 training/adapters
 training/outputs
 training/logs
+data
