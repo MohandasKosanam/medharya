@@ -127,8 +127,11 @@ export function getDatabaseUrl() {
     // PostgreSQL variables with the project name. Keep DATABASE_URL as the
     // documented contract, but accept the integration's pooled URL so a
     // connected production project cannot silently fall back to no storage.
-    process.env.POSTGRES_PRISMA_URL,
     process.env.POSTGRES_URL_NON_POOLING,
+    // The repository uses transaction-scoped isolation and advisory locks, so
+    // prefer Vercel's direct URL over its Prisma/transaction-pool URL when
+    // both are available. The pooled URL remains a compatible fallback.
+    process.env.POSTGRES_PRISMA_URL,
     process.env.POSTGRES_URL,
     process.env.medharya_POSTGRES_PRISMA_URL,
     process.env.medharya_POSTGRES_URL_NON_POOLING,
