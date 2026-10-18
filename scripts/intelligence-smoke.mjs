@@ -3,10 +3,22 @@ const firstEmail = `intelligence-${Date.now()}@example.com`;
 const secondEmail = `intelligence-other-${Date.now()}@example.com`;
 const password = "smoke-password-123";
 let cookie = "";
+const cookieJar = new Map();
 
 function rememberCookie(response) {
-  const setCookie = response.headers.get("set-cookie");
-  if (setCookie) cookie = setCookie.split(";")[0];
+  const setCookies = typeof response.headers.getSetCookie === "function"
+    ? response.headers.getSetCookie()
+    : (response.headers.get("set-cookie") ?? "").split(/,(?=[^;,]+=)/);
+  for (const setCookie of setCookies) {
+    const pair = setCookie.split(";", 1)[0];
+    const separator = pair.indexOf("=");
+    if (separator < 1) continue;
+    const name = pair.slice(0, separator);
+    const value = pair.slice(separator + 1);
+    if (!value || /(?:^|;)\s*max-age=0\b/i.test(setCookie)) cookieJar.delete(name);
+    else cookieJar.set(name, value);
+  }
+  cookie = [...cookieJar.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
 }
 
 async function request(path, options = {}) {

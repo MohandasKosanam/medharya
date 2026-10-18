@@ -104,7 +104,7 @@ async function waitForApp(child) {
       const response = await fetch(`${baseUrl}/`);
       if (response.status === 200) return;
     } catch {
-      // The production server is still starting.
+      // The test server is still starting.
     }
     await delay(250);
   }
@@ -112,9 +112,21 @@ async function waitForApp(child) {
 }
 
 let cookie = "";
+const cookieJar = new Map();
 function rememberCookie(response) {
-  const setCookie = response.headers.get("set-cookie");
-  if (setCookie) cookie = setCookie.split(";")[0];
+  const setCookies = typeof response.headers.getSetCookie === "function"
+    ? response.headers.getSetCookie()
+    : (response.headers.get("set-cookie") ?? "").split(/,(?=[^;,]+=)/);
+  for (const setCookie of setCookies) {
+    const pair = setCookie.split(";", 1)[0];
+    const separator = pair.indexOf("=");
+    if (separator < 1) continue;
+    const name = pair.slice(0, separator);
+    const value = pair.slice(separator + 1);
+    if (!value || /(?:^|;)\s*max-age=0\b/i.test(setCookie)) cookieJar.delete(name);
+    else cookieJar.set(name, value);
+  }
+  cookie = [...cookieJar.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
 }
 
 async function request(path, options = {}) {
@@ -143,12 +155,13 @@ function assert(condition, message) {
 const ollamaPort = await listen(ollamaServer);
 const childCommand = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "npm";
 const childArgs = process.platform === "win32"
-  ? ["/d", "/s", "/c", `npm start -- --port ${appPort}`]
-  : ["start", "--", "--port", String(appPort)];
+  ? ["/d", "/s", "/c", `npm run dev -- --port ${appPort}`]
+  : ["run", "dev", "--", "--port", String(appPort)];
 const child = spawn(childCommand, childArgs, {
   cwd: process.cwd(),
   env: {
     ...process.env,
+    NODE_ENV: "test",
     MEDHARYA_AI_PROVIDER: "ollama",
     MEDHARYA_AI_API_KEY: "",
     MEDHARYA_AI_MODEL: "",

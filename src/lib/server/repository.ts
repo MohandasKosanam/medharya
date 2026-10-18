@@ -55,10 +55,13 @@ const scrypt = promisify(nodeScrypt) as unknown as (
 ) => Promise<Buffer>;
 
 export const SESSION_COOKIE_NAME = "medharya_session";
+export const ANONYMOUS_DRAFT_HANDOFF_COOKIE_NAME = "medharya_draft_handoff";
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 export const ANONYMOUS_DRAFT_TTL_SECONDS = 60 * 60 * 24;
 const PASSWORD_HASH_VERSION = "scrypt-v1";
 const PASSWORD_KEY_LENGTH = 64;
+const INVALID_SNAPSHOT_MESSAGE =
+  "The repository snapshot is invalid; refusing to load or overwrite it.";
 export const DATABASE_UNAVAILABLE_MESSAGE =
   "Persistent storage is unavailable. Configure DATABASE_URL and apply db/migrations/001_initial.sql before starting production.";
 
@@ -118,15 +121,21 @@ function emptyDatabase(): ServerDatabase {
 }
 
 export function getDatabaseUrl() {
-  const databaseUrl = process.env.DATABASE_URL?.trim();
-  return databaseUrl || null;
+  const configuredUrl = [
+    process.env.DATABASE_URL,
+    // Vercel's connected Supabase integration prefixes its server-only
+    // PostgreSQL variables with the project name. Keep DATABASE_URL as the
+    // documented contract, but accept the integration's pooled URL so a
+    // connected production project cannot silently fall back to no storage.
+    process.env.medharya_POSTGRES_PRISMA_URL,
+    process.env.medharya_POSTGRES_URL_NON_POOLING,
+  ].find((value) => value?.trim());
+  return configuredUrl?.trim() || null;
 }
 
 export function getRepositoryBackend(): RepositoryBackend {
   if (getDatabaseUrl()) return "postgres";
-  const explicitTestRepository =
-    process.env.MEDHARYA_REPOSITORY_TEST_MODE === "1" && Boolean(process.env.MEDHARYA_SERVER_DATA_FILE?.trim());
-  return process.env.NODE_ENV === "production" && !explicitTestRepository ? "unavailable" : "json";
+  return process.env.NODE_ENV === "production" ? "unavailable" : "json";
 }
 
 export function getServerDataFilePath() {
@@ -139,6 +148,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown, maxLength = 10_000): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maxLength;
+}
+
+function isTimestamp(value: unknown, maxLength = 80): value is string {
+  return isNonEmptyString(value, maxLength) && Number.isFinite(Date.parse(value));
 }
 
 function isValidProjectRequest(value: unknown): value is ProjectRequest {
@@ -155,31 +168,34 @@ function isStoredUser(value: unknown): value is StoredAuthUser {
       isNonEmptyString(value.id, 200) &&
       isNonEmptyString(value.email, 254) &&
       isNonEmptyString(value.displayName, 120) &&
-      isNonEmptyString(value.createdAt, 80) &&
+      isTimestamp(value.createdAt) &&
       isNonEmptyString(value.passwordHash, 500),
   );
 }
 
 function isAnonymousDraft(value: unknown): value is AnonymousIdeaDraft {
   return Boolean(
-    isRecord(value) &&
+      isRecord(value) &&
       isNonEmptyString(value.id, 200) &&
       isValidProjectRequest(value.request) &&
-      isNonEmptyString(value.createdAt, 80) &&
-      isNonEmptyString(value.updatedAt, 80) &&
-      isNonEmptyString(value.expiresAt, 80) &&
-      (value.attachedUserId === null || isNonEmptyString(value.attachedUserId, 200)) &&
-      (value.attachedProjectId === null || isNonEmptyString(value.attachedProjectId, 200)),
+      isTimestamp(value.createdAt) &&
+      isTimestamp(value.updatedAt) &&
+      isTimestamp(value.expiresAt) &&
+      Date.parse(value.updatedAt) >= Date.parse(value.createdAt) &&
+      Date.parse(value.expiresAt) > Date.parse(value.createdAt) &&
+      ((value.attachedUserId === null && value.attachedProjectId === null) ||
+        (isNonEmptyString(value.attachedUserId, 200) && isNonEmptyString(value.attachedProjectId, 200))),
   );
 }
 
 function isOwnedProject(value: unknown): value is OwnedProject {
   return Boolean(
-    isRecord(value) &&
+      isRecord(value) &&
       isNonEmptyString(value.id, 200) &&
       isNonEmptyString(value.ownerUserId, 200) &&
-      isNonEmptyString(value.createdAt, 80) &&
-      isNonEmptyString(value.updatedAt, 80) &&
+      isTimestamp(value.createdAt) &&
+      isTimestamp(value.updatedAt) &&
+      Date.parse(value.updatedAt) >= Date.parse(value.createdAt) &&
       isRecord(value.workspace) &&
       isNonEmptyString(value.workspace.id, 200) &&
       isNonEmptyString(value.workspace.name, 240) &&
@@ -193,27 +209,82 @@ function isOwnedProject(value: unknown): value is OwnedProject {
 
 function isStoredSession(value: unknown): value is StoredSession {
   return Boolean(
-    isRecord(value) &&
+      isRecord(value) &&
       isNonEmptyString(value.id, 200) &&
       isNonEmptyString(value.userId, 200) &&
-      isNonEmptyString(value.tokenHash, 200) &&
-      isNonEmptyString(value.createdAt, 80) &&
-      isNonEmptyString(value.expiresAt, 80),
+      typeof value.tokenHash === "string" && /^[0-9a-f]{64}$/.test(value.tokenHash) &&
+      isTimestamp(value.createdAt) &&
+      isTimestamp(value.expiresAt) &&
+      Date.parse(value.expiresAt) > Date.parse(value.createdAt),
   );
 }
 
-export function parseServerDatabase(value: unknown): ServerDatabase {
-  if (!isRecord(value)) return emptyDatabase();
+function invalidSnapshot(): RepositoryError {
+  return new RepositoryError("unavailable", INVALID_SNAPSHOT_MESSAGE);
+}
 
-  return {
-    version: 1,
-    users: Array.isArray(value.users) ? value.users.filter(isStoredUser) : [],
-    anonymousIdeaDrafts: Array.isArray(value.anonymousIdeaDrafts)
-      ? value.anonymousIdeaDrafts.filter((draft): draft is AnonymousIdeaDraft => isAnonymousDraft(draft) && Date.parse(draft.expiresAt) > Date.now())
-      : [],
-    projects: Array.isArray(value.projects) ? value.projects.filter(isOwnedProject) : [],
-    sessions: Array.isArray(value.sessions) ? value.sessions.filter(isStoredSession) : [],
-  };
+function parseSnapshotRecords<T>(value: Record<string, unknown>, key: string, predicate: (item: unknown) => item is T): T[] {
+  const records = value[key];
+  if (!Array.isArray(records) || records.some((record) => !predicate(record))) throw invalidSnapshot();
+  return records;
+}
+
+function assertUniqueIds<T extends { id: string }>(records: T[]) {
+  const ids = new Set<string>();
+  for (const record of records) {
+    if (ids.has(record.id)) throw invalidSnapshot();
+    ids.add(record.id);
+  }
+}
+
+function validateSnapshotReferences(database: ServerDatabase) {
+  const usersById = new Set(database.users.map((user) => user.id));
+  const emails = new Set<string>();
+  for (const user of database.users) {
+    const email = user.email.toLowerCase();
+    if (emails.has(email)) throw invalidSnapshot();
+    emails.add(email);
+  }
+
+  const projectsById = new Map(database.projects.map((project) => [project.id, project]));
+  for (const project of database.projects) {
+    if (!usersById.has(project.ownerUserId) || project.workspace.id !== project.id) throw invalidSnapshot();
+  }
+  for (const draft of database.anonymousIdeaDrafts) {
+    if (draft.attachedUserId !== null && !usersById.has(draft.attachedUserId)) throw invalidSnapshot();
+    if (draft.attachedProjectId !== null) {
+      const project = projectsById.get(draft.attachedProjectId);
+      if (!project || project.ownerUserId !== draft.attachedUserId) throw invalidSnapshot();
+    }
+  }
+  for (const session of database.sessions) {
+    if (!usersById.has(session.userId)) throw invalidSnapshot();
+  }
+}
+
+export function parseServerDatabase(value: unknown): ServerDatabase {
+  if (!isRecord(value) || value.version !== 1) throw invalidSnapshot();
+
+  const users = parseSnapshotRecords(value, "users", isStoredUser);
+  const drafts = parseSnapshotRecords(value, "anonymousIdeaDrafts", isAnonymousDraft);
+  const projects = parseSnapshotRecords(value, "projects", isOwnedProject);
+  const sessions = parseSnapshotRecords(value, "sessions", isStoredSession);
+  assertUniqueIds(users);
+  assertUniqueIds(drafts);
+  assertUniqueIds(projects);
+  assertUniqueIds(sessions);
+
+  const database = {
+    version: 1 as const,
+    users,
+    // Expired anonymous drafts are intentionally discarded; all other records
+    // must be recognized and valid or the complete snapshot is rejected.
+    anonymousIdeaDrafts: drafts.filter((draft) => Date.parse(draft.expiresAt) > Date.now()),
+    projects,
+    sessions,
+  } satisfies ServerDatabase;
+  validateSnapshotReferences(database);
+  return database;
 }
 
 function rowString(row: Record<string, unknown>, key: string) {
@@ -393,6 +464,7 @@ async function withPostgresTransaction<T>(operation: (client: PoolClient) => Pro
     client = await getPostgresPool().connect();
     await client.query("BEGIN");
     started = true;
+    await client.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
     // Keep the snapshot adapter safe across multiple app instances. The lock is
     // transaction-scoped and does not involve any external model/provider call.
     await client.query("SELECT pg_advisory_xact_lock(hashtext('medharya:repository'))");
@@ -408,13 +480,21 @@ async function withPostgresTransaction<T>(operation: (client: PoolClient) => Pro
 }
 
 async function readJsonServerDatabase(): Promise<ServerDatabase> {
+  let raw: string;
   try {
-    const raw = await readFile(/*turbopackIgnore: true*/ getServerDataFilePath(), "utf8");
-    return parseServerDatabase(JSON.parse(raw) as unknown);
-  } catch {
-    // Missing or malformed JSON is an intentionally local/offline empty store.
-    return emptyDatabase();
+    raw = await readFile(/*turbopackIgnore: true*/ getServerDataFilePath(), "utf8");
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return emptyDatabase();
+    throw normalizeStorageError(error);
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw invalidSnapshot();
+  }
+  return parseServerDatabase(parsed);
 }
 
 /** Read from PostgreSQL in configured environments, or the local JSON store offline. */
@@ -423,11 +503,10 @@ export async function readServerDatabase(): Promise<ServerDatabase> {
   if (backend === "unavailable") throw new RepositoryError("unavailable", DATABASE_UNAVAILABLE_MESSAGE);
   if (backend === "json") return readJsonServerDatabase();
 
-  try {
-    return await readPostgresDatabase(getPostgresPool());
-  } catch (error) {
-    throw normalizeStorageError(error);
-  }
+  // Snapshot reads must use the same transaction-scoped advisory lock as
+  // snapshot replacement. Otherwise each table query can observe a different
+  // generation while another app instance is replacing the snapshot.
+  return withPostgresTransaction((client) => readPostgresDatabase(client));
 }
 
 async function writeJsonServerDatabase(database: ServerDatabase): Promise<void> {
@@ -499,6 +578,16 @@ function publicUser(user: StoredAuthUser): AuthUser {
     email: user.email,
     displayName: user.displayName,
     createdAt: user.createdAt,
+  };
+}
+
+export function toPublicAnonymousDraft(draft: AnonymousIdeaDraft) {
+  return {
+    id: draft.id,
+    request: draft.request,
+    createdAt: draft.createdAt,
+    updatedAt: draft.updatedAt,
+    expiresAt: draft.expiresAt,
   };
 }
 
@@ -591,6 +680,34 @@ async function enhanceOwnedProjectPlan(project: OwnedProject) {
   return project;
 }
 
+function attachDraftInDatabase(
+  database: ServerDatabase,
+  draftId: string,
+  userId: string,
+  preparedProject: OwnedProject | null = null,
+) {
+  const draft = database.anonymousIdeaDrafts.find((candidate) => candidate.id === draftId);
+  if (!draft) throw new RepositoryError("not-found", "The anonymous draft was not found.");
+  if (draft.attachedUserId && draft.attachedUserId !== userId) {
+    throw new RepositoryError("draft-attached", "The anonymous draft has already been attached.");
+  }
+  if (draft.attachedProjectId) {
+    const project = database.projects.find((candidate) => candidate.id === draft.attachedProjectId);
+    if (!project || project.ownerUserId !== userId) throw invalidSnapshot();
+    return project;
+  }
+
+  const preparedRequestMatches = preparedProject && JSON.stringify(preparedProject.workspace.request) === JSON.stringify(draft.request);
+  const project = preparedRequestMatches
+    ? { ...preparedProject, ownerUserId: userId }
+    : projectFromDraft(draft, userId);
+  database.projects.push(project);
+  draft.attachedUserId = userId;
+  draft.attachedProjectId = project.id;
+  draft.updatedAt = now();
+  return project;
+}
+
 export function parseProjectRequestInput(value: unknown): ProjectRequest | null {
   if (!isRecord(value)) return null;
   if ("request" in value) return parseProjectRequestInput(value.request);
@@ -679,6 +796,11 @@ export async function saveAnonymousIdeaDraft(request: ProjectRequest, requestedI
   return mutateDatabase((database) => {
     const timestamp = now();
     const existing = requestedId ? database.anonymousIdeaDrafts.find((draft) => draft.id === requestedId) : undefined;
+    if (requestedId && !existing) {
+      // A requested id is only a server-issued handoff reference. Never
+      // resurrect an expired or deleted draft under a caller-chosen id.
+      throw new RepositoryError("not-found", "The anonymous draft was not found.");
+    }
     if (existing) {
       if (existing.attachedUserId) return existing;
       existing.request = request;
@@ -812,6 +934,40 @@ export async function authenticateUser(input: LoginInput) {
   return user;
 }
 
+/** Authenticate and attach an optional handoff draft before persisting a session. */
+export async function authenticateUserAndCreateSession(input: LoginInput) {
+  if (input.anonymousDraftId !== undefined && (!isNonEmptyString(input.anonymousDraftId, 200) || input.anonymousDraftId.trim().length === 0)) {
+    throw new RepositoryError("invalid-input", "The anonymous draft id is invalid.");
+  }
+
+  const authenticatedUser = await authenticateUser(input);
+  const snapshot = await readServerDatabase();
+  const snapshotUser = snapshot.users.find((candidate) => candidate.id === authenticatedUser.id);
+  if (!snapshotUser) throw new RepositoryError("invalid-credentials", "Invalid email or password.");
+  const snapshotDraft = input.anonymousDraftId
+    ? snapshot.anonymousIdeaDrafts.find((candidate) => candidate.id === input.anonymousDraftId)
+    : undefined;
+  if (input.anonymousDraftId && !snapshotDraft) {
+    throw new RepositoryError("not-found", "The anonymous draft was not found.");
+  }
+  const preparedProject = snapshotDraft && !snapshotDraft.attachedUserId
+    ? await enhanceOwnedProjectPlan(projectFromDraft(snapshotDraft, snapshotUser.id))
+    : null;
+
+  return mutateDatabase(async (database) => {
+    const user = database.users.find((candidate) => candidate.id === snapshotUser.id);
+    if (!user) throw new RepositoryError("invalid-credentials", "Invalid email or password.");
+    const project = input.anonymousDraftId
+      ? attachDraftInDatabase(database, input.anonymousDraftId, user.id, preparedProject)
+      : null;
+    const token = createOpaqueToken();
+    const session = createSessionRecord(user.id, token);
+    database.sessions = database.sessions.filter((candidate) => Date.parse(candidate.expiresAt) > Date.now());
+    database.sessions.push(session);
+    return { user: publicUser(user), project, token, expiresAt: session.expiresAt };
+  });
+}
+
 export async function createSession(userId: string) {
   const token = createOpaqueToken();
   return mutateDatabase((database) => {
@@ -873,6 +1029,31 @@ export function clearSessionCookie(cookieStore: CookieStoreLike) {
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
+  });
+}
+
+export function setAnonymousDraftHandoffCookie(cookieStore: CookieStoreLike, draftId: string) {
+  cookieStore.set({
+    name: ANONYMOUS_DRAFT_HANDOFF_COOKIE_NAME,
+    value: draftId,
+    maxAge: ANONYMOUS_DRAFT_TTL_SECONDS,
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    path: "/api/auth",
+  });
+}
+
+export function clearAnonymousDraftHandoffCookie(cookieStore: CookieStoreLike) {
+  cookieStore.set({
+    name: ANONYMOUS_DRAFT_HANDOFF_COOKIE_NAME,
+    value: "",
+    expires: new Date(0),
+    maxAge: 0,
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    path: "/api/auth",
   });
 }
 
@@ -1204,21 +1385,5 @@ export async function attachAnonymousDraftToUser(draftId: string, userId: string
     ? null
     : await enhanceOwnedProjectPlan(projectFromDraft(snapshotDraft, userId));
 
-  return mutateDatabase(async (database) => {
-    const draft = database.anonymousIdeaDrafts.find((candidate) => candidate.id === draftId);
-    if (!draft) throw new RepositoryError("not-found", "The anonymous draft was not found.");
-    if (draft.attachedUserId && draft.attachedUserId !== userId) throw new RepositoryError("draft-attached", "The anonymous draft has already been attached.");
-    if (draft.attachedProjectId) {
-      return database.projects.find((project) => project.id === draft.attachedProjectId) || null;
-    }
-    const preparedRequestMatches = preparedProject && JSON.stringify(preparedProject.workspace.request) === JSON.stringify(draft.request);
-    const project = preparedRequestMatches
-      ? { ...preparedProject, ownerUserId: userId }
-      : projectFromDraft(draft, userId);
-    database.projects.push(project);
-    draft.attachedUserId = userId;
-    draft.attachedProjectId = project.id;
-    draft.updatedAt = now();
-    return project;
-  });
+  return mutateDatabase((database) => attachDraftInDatabase(database, draftId, userId, preparedProject));
 }

@@ -54,6 +54,14 @@ function listen(server) {
   });
 }
 
+function cookieFromResponse(response, name) {
+  const values = typeof response.headers.getSetCookie === "function"
+    ? response.headers.getSetCookie()
+    : (response.headers.get("set-cookie") ?? "").split(/,(?=[^;,]+=)/);
+  const value = values.find((candidate) => candidate.trim().startsWith(`${name}=`));
+  return value ? value.trim().split(";", 1)[0] : "";
+}
+
 async function waitForApp(baseUrl, child) {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
@@ -62,7 +70,7 @@ async function waitForApp(baseUrl, child) {
       const response = await fetch(`${baseUrl}/`);
       if (response.status === 200) return;
     } catch {
-      // The production server is still starting.
+      // The test server is still starting.
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -75,12 +83,13 @@ const baseUrl = `http://127.0.0.1:${appPort}`;
 const dataFile = join(tmpdir(), `medharya-provider-smoke-${Date.now()}.json`);
 const childCommand = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "npm";
 const childArgs = process.platform === "win32"
-  ? ["/d", "/s", "/c", `npm start -- --port ${appPort}`]
-  : ["start", "--", "--port", String(appPort)];
+  ? ["/d", "/s", "/c", `npm run dev -- --port ${appPort}`]
+  : ["run", "dev", "--", "--port", String(appPort)];
 const child = spawn(childCommand, childArgs, {
   cwd: process.cwd(),
   env: {
     ...process.env,
+    NODE_ENV: "test",
     MEDHARYA_AI_PROVIDER: "openai-compatible",
     MEDHARYA_AI_API_KEY: "mock-key",
     MEDHARYA_AI_MODEL: "mock-model",
@@ -122,12 +131,12 @@ try {
   const anonymousPayload = await anonymous.json();
   const signup = await request("/api/auth/signup", {
     method: "POST",
-    headers: { cookie: anonymous.headers.get("set-cookie")?.split(";")[0] ?? "" },
+    headers: { cookie: cookieFromResponse(anonymous, "medharya_draft_handoff") },
     body: JSON.stringify({ email, password: "provider-password-123", anonymousDraftId: anonymousPayload.draft.id }),
   });
   const signupPayload = await signup.json();
   const projectId = signupPayload.project?.id;
-  const cookie = signup.headers.get("set-cookie")?.split(";")[0] ?? "";
+  const cookie = cookieFromResponse(signup, "medharya_session");
   if (signup.status !== 201 || typeof projectId !== "string" || !cookie) throw new Error("Provider smoke account setup failed.");
 
   const operatingSystem = structuredClone(signupPayload.project.operatingSystem);
@@ -167,7 +176,7 @@ try {
     headers: { cookie },
     body: JSON.stringify({ operatingSystem }),
   });
-  if (operatingSystemPatch.status !== 200) throw new Error("Provider smoke operating-system setup failed.");
+  if (operatingSystemPatch.status !== 200) throw new Error(`Provider smoke operating-system setup failed (${operatingSystemPatch.status}).`);
 
   const plan = await request("/api/plan", {
     method: "POST",

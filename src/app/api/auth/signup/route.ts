@@ -2,6 +2,8 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import {
+  ANONYMOUS_DRAFT_HANDOFF_COOKIE_NAME,
+  clearAnonymousDraftHandoffCookie,
   isValidEmail,
   registerUser,
   RepositoryError,
@@ -28,18 +30,17 @@ export async function POST(request: Request) {
     if (body.displayName !== undefined && (typeof body.displayName !== "string" || body.displayName.trim().length > 120)) {
       return NextResponse.json({ error: "Display name must be 120 characters or fewer." }, { status: 400 });
     }
-    const anonymousDraftId = body.anonymousDraftId ?? body.draftId;
-    if (anonymousDraftId !== undefined && (typeof anonymousDraftId !== "string" || anonymousDraftId.trim().length === 0 || anonymousDraftId.length > 200)) {
-      return NextResponse.json({ error: "The anonymous draft id is invalid." }, { status: 400 });
-    }
+    const cookieStore = await cookies();
+    const anonymousDraftId = cookieStore.get(ANONYMOUS_DRAFT_HANDOFF_COOKIE_NAME)?.value.trim() || undefined;
 
     const result = await registerUser({
       email: body.email,
       password: body.password,
       displayName: body.displayName as string | undefined,
-      anonymousDraftId: anonymousDraftId as string | undefined,
+      ...(anonymousDraftId ? { anonymousDraftId } : {}),
     });
-    setSessionCookie(await cookies(), result.token, result.expiresAt);
+    setSessionCookie(cookieStore, result.token, result.expiresAt);
+    if (anonymousDraftId) clearAnonymousDraftHandoffCookie(cookieStore);
     return NextResponse.json(
       { user: result.user, project: result.project?.workspace ?? null },
       { status: 201 },

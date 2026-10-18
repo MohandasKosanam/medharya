@@ -10,12 +10,14 @@ import {
   updateOwnedProjectWorkspace,
   isRepositoryUnavailable,
 } from "@/lib/server/repository";
+import { readJsonBody, RequestBodyTooLargeError } from "@/lib/server/request";
 import { appendResearchBundle, appendWorkspaceMessage, createStableId } from "@/lib/workspace";
 import type { ResearchResponse } from "@/types/research";
 import type { WorkspaceMessage } from "@/types/workspace";
 
 const MAX_PROJECT_ID_LENGTH = 200;
 const MAX_BRANCH_ID_LENGTH = 200;
+const MAX_REQUEST_BYTES = 32_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -89,7 +91,7 @@ async function persistResearch(
 
 export async function POST(request: Request) {
   try {
-    const body: unknown = await request.json();
+    const body: unknown = await readJsonBody(request, MAX_REQUEST_BYTES);
     const query = isRecord(body) && typeof body.query === "string" ? body.query.trim() : "";
     if (query.length < 3 || query.length > 300) {
       return NextResponse.json({ error: "Research queries must be between 3 and 300 characters." }, { status: 400 });
@@ -131,6 +133,9 @@ export async function POST(request: Request) {
       ...(projectId ? {} : { notice: "This local draft research response was not persisted by the server." }),
     }, { status });
   } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return NextResponse.json({ error: error.message }, { status: 413 });
+    }
     if (isRepositoryUnavailable(error)) {
       return NextResponse.json({ error: error.message }, { status: 503 });
     }

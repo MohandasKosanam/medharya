@@ -14,6 +14,7 @@ const ALPHA_PROVIDER_ID = "medharya-alpha";
 const DEFAULT_BASE_URL = "";
 const DEFAULT_HEALTH_PATH = "/health";
 const DEFAULT_CHAT_PATH = "/chat";
+const OPENAI_COMPATIBLE_CHAT_PATH = "/v1/chat/completions";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MIN_TIMEOUT_MS = 2_000;
 const MAX_TIMEOUT_MS = 45_000;
@@ -34,6 +35,8 @@ export const MEDHARYA_ALPHA_LIMITS = {
   maxOutputChars: 12_000,
 } as const;
 
+export type MedharyaAlphaProtocol = "native" | "openai-compatible";
+
 export interface AlphaProviderResponse {
   ok: boolean;
   status: number;
@@ -50,6 +53,7 @@ export interface MedharyaAlphaProviderOptions {
   model?: string;
   baseModel?: string;
   adapterVersion?: string;
+  protocol?: MedharyaAlphaProtocol;
   baseUrl?: string;
   healthPath?: string;
   chatPath?: string;
@@ -119,6 +123,7 @@ interface NormalizedAlphaConfig {
   model: string;
   baseModel?: string;
   adapterVersion?: string;
+  protocol: MedharyaAlphaProtocol;
   baseUrl: string;
   healthPath: string;
   chatPath: string;
@@ -149,6 +154,16 @@ class AlphaQueueCapacityError extends Error {
 
 function configuredValue(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function configuredAlphaProtocol(value: unknown): MedharyaAlphaProtocol | null | undefined {
+  const candidate = configuredValue(value);
+  if (!candidate) return undefined;
+
+  const normalized = candidate.toLowerCase().replace(/[_\s]+/g, "-");
+  if (normalized === "native") return "native";
+  if (normalized === "openai" || normalized === "openai-compatible") return "openai-compatible";
+  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -284,6 +299,7 @@ function alphaOptionsFromEnvironment(
     model: env.MEDHARYA_ALPHA_MODEL,
     baseModel: env.MEDHARYA_ALPHA_BASE_MODEL,
     adapterVersion: env.MEDHARYA_ALPHA_ADAPTER_VERSION,
+    protocol: env.MEDHARYA_ALPHA_PROTOCOL as MedharyaAlphaProtocol | undefined,
     baseUrl: env.MEDHARYA_ALPHA_BASE_URL,
     healthPath: env.MEDHARYA_ALPHA_HEALTH_PATH,
     chatPath: env.MEDHARYA_ALPHA_CHAT_PATH,
@@ -301,8 +317,28 @@ function normalizeAlphaConfig(options: MedharyaAlphaProviderOptions): Normalized
   const allowInsecureLocal = booleanOption(options.allowInsecureLocal);
   const baseUrl = normalizeBaseUrl(options.baseUrl, allowInsecureLocal);
   const healthPath = normalizeServicePath(options.healthPath, DEFAULT_HEALTH_PATH);
-  const chatPath = normalizeServicePath(options.chatPath, DEFAULT_CHAT_PATH);
-  if (!apiKey || !model || !baseUrl || healthPath === null || chatPath === null) return null;
+  const configuredProtocol = configuredAlphaProtocol(options.protocol);
+  const configuredChatPath = configuredValue(options.chatPath);
+  const normalizedConfiguredChatPath = configuredChatPath
+    ? normalizeServicePath(configuredChatPath, DEFAULT_CHAT_PATH)
+    : undefined;
+  if (
+    !apiKey
+    || !model
+    || !baseUrl
+    || healthPath === null
+    || configuredProtocol === null
+    || normalizedConfiguredChatPath === null
+  ) return null;
+
+  // Keep native Alpha as the default. The exact documented Colab path is the
+  // only implicit protocol signal; all other paths retain the native body.
+  const protocol = configuredProtocol ?? (
+    normalizedConfiguredChatPath === OPENAI_COMPATIBLE_CHAT_PATH ? "openai-compatible" : "native"
+  );
+  const chatPath = normalizedConfiguredChatPath ?? (
+    protocol === "openai-compatible" ? OPENAI_COMPATIBLE_CHAT_PATH : DEFAULT_CHAT_PATH
+  );
 
   const request = requestFrom(options.request);
   return {
@@ -312,6 +348,7 @@ function normalizeAlphaConfig(options: MedharyaAlphaProviderOptions): Normalized
     ...(configuredValue(options.adapterVersion)
       ? { adapterVersion: configuredValue(options.adapterVersion) ?? undefined }
       : {}),
+    protocol,
     baseUrl,
     healthPath,
     chatPath,
@@ -381,7 +418,9 @@ function unavailable(reason: ProviderErrorReason, model: string | null): ModelPr
 
 function alphaConfigKey(config: NormalizedAlphaConfig) {
   return createHash("sha256")
-    .update(`${config.baseUrl}\n${config.apiKey}\n${config.model}\n${config.baseModel ?? ""}\n${config.adapterVersion ?? ""}`)
+    .update(
+      `${config.baseUrl}\n${config.apiKey}\n${config.model}\n${config.baseModel ?? ""}\n${config.adapterVersion ?? ""}\n${config.protocol}\n${config.chatPath}`,
+    )
     .digest("hex");
 }
 
@@ -445,20 +484,62 @@ export function normalizeMedharyaAlphaResponse(
   };
 }
 
+export function normalizeMedharyaAlphaOpenAIResponse(
+  value: unknown,
+  maxOutputChars = MEDHARYA_ALPHA_LIMITS.maxOutputChars,
+): NormalizedMedharyaAlphaResponse | null {
+  if (!isRecord(value) || !Array.isArray(value.choices)) return null;
+
+  const firstChoice = value.choices[0];
+  if (!isRecord(firstChoice) || !isRecord(firstChoice.message)) return null;
+
+  const outputLimit = Number.isFinite(maxOutputChars)
+    ? Math.min(Math.max(Math.floor(maxOutputChars), 1), MEDHARYA_ALPHA_LIMITS.maxOutputChars)
+    : MEDHARYA_ALPHA_LIMITS.maxOutputChars;
+  const text = boundedText(firstChoice.message.content, outputLimit);
+  if (!text) return null;
+
+  const model = metadataText(value.model);
+  const baseModel = metadataText(value.base_model ?? value.baseModel);
+  const adapterVersion = adapterMetadata(value);
+  const usage = usageFromResponse(value.usage);
+  return {
+    text,
+    ...(model ? { model } : {}),
+    ...(baseModel ? { baseModel } : {}),
+    ...(adapterVersion ? { adapterVersion } : {}),
+    ...(usage ? { usage } : {}),
+  };
+}
+
 async function requestAlphaOnce(
   config: NormalizedAlphaConfig,
   prompt: ModelPrompt,
 ): Promise<ModelProviderResult> {
   const safePrompt = boundedPrompt(prompt);
   const requestId = createRequestId();
-  const body = JSON.stringify({
-    request_id: requestId,
-    message: safePrompt.message,
-    system: safePrompt.system,
-    context: safePrompt.context,
-    history: safePrompt.history,
-    max_new_tokens: config.maxOutputTokens,
-  });
+  const body = JSON.stringify(
+    config.protocol === "openai-compatible"
+      ? {
+          model: config.model,
+          temperature: 0.2,
+          max_tokens: config.maxOutputTokens,
+          messages: [
+            { role: "system", content: safePrompt.system },
+            { role: "system", content: safePrompt.context },
+            ...safePrompt.history,
+            { role: "user", content: safePrompt.message },
+          ],
+        }
+      : {
+          request_id: requestId,
+          message: safePrompt.message,
+          system: safePrompt.system,
+          context: safePrompt.context,
+          history: safePrompt.history,
+          max_new_tokens: config.maxOutputTokens,
+        },
+  );
 
   if (body.length > MAX_REQUEST_CHARS) return unavailable(PROVIDER_ERROR_REASONS.invalidResponse, config.model);
 
@@ -488,7 +569,9 @@ async function requestAlphaOnce(
           return unavailable(PROVIDER_ERROR_REASONS.invalidResponse, config.model);
         }
 
-        const normalized = normalizeMedharyaAlphaResponse(payload);
+        const normalized = config.protocol === "openai-compatible"
+          ? normalizeMedharyaAlphaOpenAIResponse(payload)
+          : normalizeMedharyaAlphaResponse(payload);
         if (!normalized) return unavailable(PROVIDER_ERROR_REASONS.invalidResponse, config.model);
 
         if (
@@ -937,6 +1020,7 @@ export const createAlphaProvider = createMedharyaAlphaProvider;
 export const getConfiguredAlphaProvider = getConfiguredMedharyaAlphaProvider;
 export const requestAlpha = requestMedharyaAlpha;
 export const normalizeAlphaResponse = normalizeMedharyaAlphaResponse;
+export const normalizeAlphaOpenAIResponse = normalizeMedharyaAlphaOpenAIResponse;
 export const checkAlphaHealth = checkMedharyaAlphaHealth;
 export const getAlphaHealthStatus = getMedharyaAlphaHealthStatus;
 export const getMedharyaAlphaStatus = getMedharyaAlphaHealthStatus;

@@ -7,7 +7,6 @@ import type { ProjectWorkspace } from "@/types/workspace";
 type AuthMode = "signup" | "login";
 
 type AuthGateProps = {
-  draftId: string;
   onProjectReady: (workspace: ProjectWorkspace) => void;
   onContinueLocally: () => void;
 };
@@ -21,7 +20,7 @@ async function responsePayload(response: Response) {
   }
 }
 
-export function AuthGate({ draftId, onProjectReady, onContinueLocally }: AuthGateProps) {
+export function AuthGate({ onProjectReady, onContinueLocally }: AuthGateProps) {
   const [mode, setMode] = useState<AuthMode>("signup");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -42,7 +41,6 @@ export function AuthGate({ draftId, onProjectReady, onContinueLocally }: AuthGat
           email,
           password,
           ...(mode === "signup" ? { displayName } : {}),
-          anonymousDraftId: draftId,
         }),
       });
       const payload = await responsePayload(response);
@@ -50,7 +48,7 @@ export function AuthGate({ draftId, onProjectReady, onContinueLocally }: AuthGat
         throw new Error(typeof payload.error === "string" ? payload.error : "The account request could not be completed.");
       }
       if (!payload.project || typeof payload.project !== "object") {
-        throw new Error("Your account is ready, but the project draft was not attached. Keep the draft id and try again.");
+        throw new Error("Your account is ready, but the project draft was not attached. Try the account request again.");
       }
       onProjectReady(payload.project as ProjectWorkspace);
     } catch (requestError) {

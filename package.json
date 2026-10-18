@@ -14,7 +14,7 @@
     "test:research-engine": "node --no-warnings --experimental-strip-types scripts/research-engine-smoke.mjs",
     "test:provider": "node scripts/provider-integration-smoke.mjs",
     "test:research-safety": "node --no-warnings --experimental-strip-types --import ./scripts/register-ts-loader.mjs scripts/research-safety-smoke.mjs",
-    "test:alpha-adapter": "node --no-warnings --experimental-strip-types scripts/alpha-adapter-smoke.mjs",
+    "test:alpha-adapter": "node --no-warnings --experimental-strip-types --import ./scripts/register-ts-loader.mjs scripts/alpha-adapter-smoke.mjs",
     "test:ollama-adapter": "node scripts/ollama-adapter-smoke.mjs",
     "test:ollama:live": "node scripts/ollama-live-smoke.mjs",
     "test:alpha:live": "node scripts/alpha-live-smoke.mjs"

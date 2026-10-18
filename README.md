@@ -17,8 +17,9 @@ ran.
 - Phase 1 responsive landing page and validated project brief.
 - Stable project workspace URLs such as `/workspace/<project-id>`.
 - Browser-local early persistence plus an account-backed repository that uses
-  PostgreSQL when `DATABASE_URL` is configured and a local JSON file only for
-  non-production/offline development and tests.
+  PostgreSQL when `DATABASE_URL` is configured (or when Vercel's connected
+  Supabase integration provides its server-only pooled URL) and a local JSON
+  file only for non-production/offline development and tests.
 - Editable project brief with explicit save-and-regenerate behavior.
 - Context-aware chat with a clear deterministic fallback when no model provider
   is configured or a configured provider times out, is rate-limited, rejects its
@@ -83,7 +84,8 @@ a writable server path when the default `./data/medharya-server.json` is not
 appropriate. The JSON repository is disabled when `NODE_ENV=production`.
 
 For production account-backed persistence, set the server-only `DATABASE_URL`
-and apply the committed schema before starting the app:
+(the connected Vercel Supabase integration is also accepted automatically) and
+apply the committed schema before starting the app:
 
 ```bash
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/001_initial.sql
@@ -360,6 +362,7 @@ The dedicated Alpha adapter targets a configurable service with these defaults:
 
 ```dotenv
 MEDHARYA_AI_PROVIDER=alpha
+MEDHARYA_ALPHA_PROTOCOL=native
 MEDHARYA_ALPHA_BASE_URL=https://your-private-alpha-host.example
 MEDHARYA_ALPHA_API_KEY=replace-me
 MEDHARYA_ALPHA_MODEL=medharya-alpha-v0.1
@@ -387,18 +390,27 @@ bounded JSON request:
 }
 ```
 
-It accepts only a bounded text response from the top-level `response`, `reply`,
-or `content` field. Optional response metadata is read from `model`,
-`base_model`, and `adapter_version` (snake-case or camel-case variants).
+`MEDHARYA_ALPHA_PROTOCOL=native` is the default and uses the request shape above
+at `MEDHARYA_ALPHA_CHAT_PATH` (default `/chat`). To use the Colab notebook's
+OpenAI-compatible contract while keeping the `medharya-alpha` provider selector,
+set `MEDHARYA_ALPHA_PROTOCOL=openai-compatible`. That mode defaults to
+`/v1/chat/completions` and sends bounded OpenAI `messages`, `model`,
+`max_tokens`, and `temperature` fields. `MEDHARYA_ALPHA_CHAT_PATH` can override
+that exact path when the deployment documents a different path; no arbitrary
+endpoint is inferred.
+
+Native mode accepts only a bounded text response from the top-level `response`,
+`reply`, or `content` field. OpenAI-compatible mode accepts
+`choices[0].message.content` and optional `usage`; both modes normalize
+`model`, `base_model`, and `adapter_version` (snake-case or camel-case
+variants) when present.
 `GET /health` must expose a readiness signal such as `ready: true`,
 `model_loaded: true`, `status: "ready"`, or `ok: true`; returning matching model,
 base-model, and adapter metadata is required to mark identity as verified.
 
-These are the adapter's current contract assumptions, not a claim that the
-historical Colab service still implements them. No Alpha URL, credential,
-deployment, base-model load, adapter load, or live inference was discoverable in
-this workspace at the time of this integration. Verify the actual FastAPI
-schemas before enabling Alpha in production.
+The Colab OpenAI-compatible contract is supported by the explicit protocol
+setting above. Verify the stable HTTPS service URL, credential, health
+readiness, and model identity before enabling Alpha in production.
 
 Remote Alpha URLs must use HTTPS. HTTP is accepted only for `localhost` or
 `127.0.0.1` when `MEDHARYA_ALPHA_ALLOW_INSECURE_LOCAL=1`, and that exception is
@@ -483,14 +495,16 @@ after these variables are configured in the running Medharya backend and an
 authenticated `/api/chat` request returns `source: "model-assisted"` with
 `provider: "openai-compatible"`.
 
-The current Colab notebook uses this same OpenAI-compatible shape: its FastAPI
-service exposes `GET /health` and `POST /v1/chat/completions`, requires a
-server-side Bearer token, and returns the configured
-`medharya-alpha-v0.1` model in the completion response. For that service, use
-the OpenAI-compatible provider with `MEDHARYA_AI_BASE_URL` set to the stable
-HTTPS service root plus `/v1` and `MEDHARYA_AI_MODEL=medharya-alpha-v0.1`.
-The temporary Cloudflare URLs shown by Colab are not a production hosting
-solution and must be treated as unavailable when they stop responding.
+The current Colab notebook uses the Alpha selector with this same
+OpenAI-compatible shape: its FastAPI service exposes `GET /health` and
+`POST /v1/chat/completions`, requires a server-side Bearer token, and returns
+the configured `medharya-alpha-v0.1` model in the completion response. For
+that service, set `MEDHARYA_AI_PROVIDER=alpha`,
+`MEDHARYA_ALPHA_PROTOCOL=openai-compatible`,
+`MEDHARYA_ALPHA_BASE_URL` to the stable HTTPS service root, and
+`MEDHARYA_ALPHA_MODEL=medharya-alpha-v0.1`. The temporary Cloudflare URLs
+shown by Colab are not a production hosting solution and must be treated as
+unavailable when they stop responding.
 
 ### Live research provider
 
@@ -628,8 +642,9 @@ recommendation and conversation contracts.
    local JSON repository.
 4. For Alpha, deploy the Qwen3-8B base model and Medharya Alpha v0.1 QLoRA
    adapter as separate artifacts on a persistent, authenticated GPU service.
-   The service must expose the `/health` and `/chat` contract documented above;
-   Colab or a temporary tunnel is not a production deployment.
+   The service must expose `/health` plus either the native `/chat` contract or
+   the OpenAI-compatible `/v1/chat/completions` contract selected above; Colab
+   or a temporary tunnel is not a production deployment.
 5. For a Runpod worker that exposes the OpenAI-compatible contract, configure
    `MEDHARYA_AI_PROVIDER`, `MEDHARYA_AI_API_KEY`, `MEDHARYA_AI_MODEL`, and
    `MEDHARYA_AI_BASE_URL` only in the deployment secret manager. Verify the

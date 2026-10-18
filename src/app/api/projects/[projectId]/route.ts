@@ -7,6 +7,9 @@ import {
   updateOwnedProject,
   isRepositoryUnavailable,
 } from "@/lib/server/repository";
+import { readJsonBody, RequestBodyTooLargeError } from "@/lib/server/request";
+
+const MAX_REQUEST_BYTES = 16_000;
 
 interface ProjectRouteContext {
   params: Promise<{ projectId: string }>;
@@ -38,7 +41,7 @@ export async function PATCH(request: Request, context: ProjectRouteContext) {
     const { projectId } = await context.params;
     if (!projectId || projectId.length > 200) return NextResponse.json({ error: "The project id is invalid." }, { status: 400 });
 
-    const body: unknown = await request.json();
+    const body: unknown = await readJsonBody(request, MAX_REQUEST_BYTES);
     const patch = parseWorkspaceRequestPatch(body);
     if (!patch) return NextResponse.json({ error: "A valid project request patch is required." }, { status: 400 });
 
@@ -46,6 +49,9 @@ export async function PATCH(request: Request, context: ProjectRouteContext) {
     if (!project) return NextResponse.json({ error: "Project not found." }, { status: 404 });
     return NextResponse.json({ project: project.workspace });
   } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return NextResponse.json({ error: error.message }, { status: 413 });
+    }
     if (isRepositoryUnavailable(error)) {
       return NextResponse.json({ error: error.message }, { status: 503 });
     }

@@ -15,6 +15,7 @@ import {
   updateOwnedProjectWorkspace,
   isRepositoryUnavailable,
 } from "@/lib/server/repository";
+import { readJsonBody, RequestBodyTooLargeError } from "@/lib/server/request";
 import { appendResearchBundle, appendWorkspaceMessage, createStableId } from "@/lib/workspace";
 import type { ResearchCitation, ResearchResponse } from "@/types/research";
 import type { ProjectWorkspace, WorkspaceMessage, WorkspaceMessageCitation } from "@/types/workspace";
@@ -456,11 +457,7 @@ async function chatForOwnedProject(
 
 export async function POST(request: Request) {
   try {
-    const contentLength = Number(request.headers.get("content-length") ?? "0");
-    if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) {
-      return NextResponse.json({ error: "The chat request is too large." }, { status: 413 });
-    }
-    const body: unknown = await request.json();
+    const body: unknown = await readJsonBody(request, MAX_REQUEST_BYTES);
     if (!isRecord(body) || typeof body.message !== "string") {
       return NextResponse.json({ error: "A valid message is required." }, { status: 400 });
     }
@@ -503,6 +500,9 @@ export async function POST(request: Request) {
       notice: `${reply.notice ?? ""}${reply.notice ? " " : ""}This local draft response was not persisted by the server.`.trim(),
     });
   } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return NextResponse.json({ error: error.message }, { status: 413 });
+    }
     if (isRepositoryUnavailable(error)) {
       return NextResponse.json({ error: error.message }, { status: 503 });
     }

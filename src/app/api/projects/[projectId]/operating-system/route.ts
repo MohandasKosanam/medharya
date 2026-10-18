@@ -7,6 +7,9 @@ import {
   updateOwnedProjectOperatingSystem,
   isRepositoryUnavailable,
 } from "@/lib/server/repository";
+import { readJsonBody, RequestBodyTooLargeError } from "@/lib/server/request";
+
+const MAX_REQUEST_BYTES = 1_500_000;
 
 interface ProjectRouteContext {
   params: Promise<{ projectId: string }>;
@@ -22,11 +25,7 @@ export async function PATCH(request: Request, context: ProjectRouteContext) {
       return NextResponse.json({ error: "The project id is invalid." }, { status: 400 });
     }
 
-    const contentLength = Number(request.headers.get("content-length") ?? "0");
-    if (contentLength > 1_500_000) {
-      return NextResponse.json({ error: "The operating-system update is too large." }, { status: 413 });
-    }
-    const body: unknown = await request.json();
+    const body: unknown = await readJsonBody(request, MAX_REQUEST_BYTES);
     const bodyRecord = typeof body === "object" && body !== null ? body as Record<string, unknown> : null;
     const candidate = bodyRecord && "operatingSystem" in bodyRecord
       ? bodyRecord.operatingSystem
@@ -50,6 +49,9 @@ export async function PATCH(request: Request, context: ProjectRouteContext) {
     if (!project) return NextResponse.json({ error: "Project not found." }, { status: 404 });
     return NextResponse.json({ project: project.workspace });
   } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return NextResponse.json({ error: error.message }, { status: 413 });
+    }
     if (isRepositoryUnavailable(error)) {
       return NextResponse.json({ error: error.message }, { status: 503 });
     }
