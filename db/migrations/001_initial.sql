@@ -58,7 +58,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at timestamptz NOT NULL,
   expires_at timestamptz NOT NULL,
   CONSTRAINT sessions_id_length CHECK (char_length(id) BETWEEN 1 AND 200),
-  CONSTRAINT sessions_token_hash_format CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  CONSTRAINT sessions_token_hash_length CHECK (char_length(token_hash) = 64),
+  CONSTRAINT sessions_token_hash_lowercase CHECK (token_hash = lower(token_hash)),
+  CONSTRAINT sessions_token_hash_hex CHECK (translate(token_hash, '0123456789abcdef', '') = ''),
   CONSTRAINT sessions_expiry_order CHECK (expires_at > created_at)
 );
 
