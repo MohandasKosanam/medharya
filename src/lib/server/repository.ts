@@ -467,8 +467,24 @@ function getPostgresPool() {
   const databaseUrl = getDatabaseUrl();
   if (!databaseUrl) throw new RepositoryError("unavailable", DATABASE_UNAVAILABLE_MESSAGE);
   if (!postgresPool || postgresPoolUrl !== databaseUrl) {
+    const managedVercelPostgres =
+      !process.env.DATABASE_URL?.trim() &&
+      Boolean(
+        process.env.POSTGRES_URL_NON_POOLING ||
+          process.env.POSTGRES_PRISMA_URL ||
+          process.env.POSTGRES_URL ||
+          process.env.medharya_POSTGRES_URL_NON_POOLING ||
+          process.env.medharya_POSTGRES_PRISMA_URL,
+      );
+    const allowManagedProviderCertificate =
+      process.env.MEDHARYA_DATABASE_SSL_REJECT_UNAUTHORIZED === "0" || managedVercelPostgres;
     postgresPool = new Pool({
       connectionString: databaseUrl,
+      // Vercel's managed Supabase connection variables require TLS but may
+      // present a provider-managed certificate chain unavailable in the
+      // serverless runtime trust store. Keep explicit DATABASE_URL strict;
+      // only the managed integration path uses encrypted-but-unverified TLS.
+      ...(allowManagedProviderCertificate ? { ssl: { rejectUnauthorized: false } } : {}),
       application_name: "medharya",
       max: 10,
       connectionTimeoutMillis: 5_000,
