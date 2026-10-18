@@ -7,6 +7,9 @@ const repository = await import("../src/lib/server/repository.ts");
 const originalEnvironment = {
   NODE_ENV: process.env.NODE_ENV,
   DATABASE_URL: process.env.DATABASE_URL,
+  POSTGRES_PRISMA_URL: process.env.POSTGRES_PRISMA_URL,
+  POSTGRES_URL_NON_POOLING: process.env.POSTGRES_URL_NON_POOLING,
+  POSTGRES_URL: process.env.POSTGRES_URL,
   medharya_POSTGRES_PRISMA_URL: process.env.medharya_POSTGRES_PRISMA_URL,
   medharya_POSTGRES_URL_NON_POOLING: process.env.medharya_POSTGRES_URL_NON_POOLING,
   MEDHARYA_SERVER_DATA_FILE: process.env.MEDHARYA_SERVER_DATA_FILE,
@@ -28,6 +31,9 @@ function restoreEnvironment() {
 try {
   process.env.NODE_ENV = "test";
   delete process.env.DATABASE_URL;
+  delete process.env.POSTGRES_PRISMA_URL;
+  delete process.env.POSTGRES_URL_NON_POOLING;
+  delete process.env.POSTGRES_URL;
   delete process.env.medharya_POSTGRES_PRISMA_URL;
   delete process.env.medharya_POSTGRES_URL_NON_POOLING;
   process.env.MEDHARYA_SERVER_DATA_FILE = join(temporaryDirectory, "server.json");
@@ -161,8 +167,15 @@ try {
   process.env.medharya_POSTGRES_PRISMA_URL = "postgres://offline-contract.invalid/vercel-integration";
   assert(repository.getRepositoryBackend() === "postgres", "The connected Vercel PostgreSQL URL must select the PostgreSQL repository.");
 
+  delete process.env.medharya_POSTGRES_PRISMA_URL;
+  process.env.POSTGRES_PRISMA_URL = "postgres://offline-contract.invalid/vercel-unprefixed-integration";
+  assert(repository.getRepositoryBackend() === "postgres", "The unprefixed Vercel PostgreSQL URL must select the PostgreSQL repository.");
+
   process.env.NODE_ENV = "production";
   delete process.env.DATABASE_URL;
+  delete process.env.POSTGRES_PRISMA_URL;
+  delete process.env.POSTGRES_URL_NON_POOLING;
+  delete process.env.POSTGRES_URL;
   delete process.env.medharya_POSTGRES_PRISMA_URL;
   delete process.env.medharya_POSTGRES_URL_NON_POOLING;
   assert(repository.getRepositoryBackend() === "unavailable", "Production without DATABASE_URL must be unavailable.");

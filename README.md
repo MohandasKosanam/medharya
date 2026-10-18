@@ -18,8 +18,9 @@ ran.
 - Stable project workspace URLs such as `/workspace/<project-id>`.
 - Browser-local early persistence plus an account-backed repository that uses
   PostgreSQL when `DATABASE_URL` is configured (or when Vercel's connected
-  Supabase integration provides its server-only pooled URL) and a local JSON
-  file only for non-production/offline development and tests.
+  Supabase integration provides its server-only `POSTGRES_PRISMA_URL` pooled
+  URL) and a local JSON file only for non-production/offline development and
+  tests.
 - Editable project brief with explicit save-and-regenerate behavior.
 - Context-aware chat with a clear deterministic fallback when no model provider
   is configured or a configured provider times out, is rate-limited, rejects its
@@ -84,8 +85,8 @@ a writable server path when the default `./data/medharya-server.json` is not
 appropriate. The JSON repository is disabled when `NODE_ENV=production`.
 
 For production account-backed persistence, set the server-only `DATABASE_URL`
-(the connected Vercel Supabase integration is also accepted automatically) and
-apply the committed schema before starting the app:
+(the connected Vercel Supabase integration's `POSTGRES_PRISMA_URL` is also
+accepted automatically) and apply the committed schema before starting the app:
 
 ```bash
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/001_initial.sql
