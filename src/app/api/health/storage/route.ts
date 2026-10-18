@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  checkPostgresStorage,
   getRepositoryBackend,
   isRepositoryUnavailable,
   readServerDatabase,
@@ -22,6 +23,13 @@ export async function GET() {
   }
 
   try {
+    const postgresCheck = await checkPostgresStorage();
+    if (!postgresCheck.ready) {
+      return NextResponse.json(
+        { status: "unavailable", backend, reason: postgresCheck.reason },
+        { status: 503, ...noStore },
+      );
+    }
     await readServerDatabase();
     return NextResponse.json({ status: "ok", backend }, noStore);
   } catch (error) {

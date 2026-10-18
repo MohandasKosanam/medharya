@@ -327,6 +327,31 @@ const POSTGRES_TABLES = {
   sessions: "medharya.sessions",
 } as const;
 
+export async function checkPostgresStorage() {
+  try {
+    const result = await getPostgresPool().query(`
+      SELECT
+        to_regclass('medharya.schema_migrations') IS NOT NULL AS has_migrations,
+        to_regclass('medharya.users') IS NOT NULL AS has_users,
+        to_regclass('medharya.projects') IS NOT NULL AS has_projects,
+        to_regclass('medharya.anonymous_drafts') IS NOT NULL AS has_drafts,
+        to_regclass('medharya.sessions') IS NOT NULL AS has_sessions
+    `);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    const hasSchema = Boolean(
+      row?.has_migrations &&
+      row.has_users &&
+      row.has_projects &&
+      row.has_drafts &&
+      row.has_sessions,
+    );
+    return { ready: hasSchema, reason: hasSchema ? null : "schema-missing" } as const;
+  } catch (error) {
+    const code = isRecord(error) && typeof error.code === "string" ? error.code : null;
+    return { ready: false, reason: code ? `database-${code}` : "database-connection-failed" } as const;
+  }
+}
+
 async function readPostgresDatabase(executor: Pool | PoolClient): Promise<ServerDatabase> {
   const users = await queryRows(
     executor,
