@@ -478,8 +478,11 @@ function getPostgresPool() {
       );
     const allowManagedProviderCertificate =
       process.env.MEDHARYA_DATABASE_SSL_REJECT_UNAUTHORIZED === "0" || managedVercelPostgres;
+    const connectionString = allowManagedProviderCertificate
+      ? databaseUrl.replace(/([?&])sslmode=(?:require|verify-ca|verify-full)(?=(&|$))/i, "$1sslmode=no-verify")
+      : databaseUrl;
     postgresPool = new Pool({
-      connectionString: databaseUrl,
+      connectionString,
       // Vercel's managed Supabase connection variables require TLS but may
       // present a provider-managed certificate chain unavailable in the
       // serverless runtime trust store. Keep explicit DATABASE_URL strict;
