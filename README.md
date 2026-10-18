@@ -469,7 +469,9 @@ MEDHARYA_AI_TIMEOUT_MS=45000
 `/chat/completions` URL. The adapter sends a server-side Bearer credential and
 the standard `model`, `temperature`, `max_tokens`, and `messages` fields. It
 accepts `choices[0].message.content` (or the compatible `choices[0].text`)
-and optional token usage. A Runpod dashboard URL, endpoint ID without an API
+and optional token usage. When the response includes a `model` field, it must
+match `MEDHARYA_AI_MODEL`; a matching response is marked identity-verified in
+the chat provider status. A Runpod dashboard URL, endpoint ID without an API
 URL, or a worker that only exposes raw Serverless `/run` and polling endpoints
 does not satisfy this integration contract.
 
@@ -480,6 +482,15 @@ is deployed or reachable. A genuine Runpod integration is established only
 after these variables are configured in the running Medharya backend and an
 authenticated `/api/chat` request returns `source: "model-assisted"` with
 `provider: "openai-compatible"`.
+
+The current Colab notebook uses this same OpenAI-compatible shape: its FastAPI
+service exposes `GET /health` and `POST /v1/chat/completions`, requires a
+server-side Bearer token, and returns the configured
+`medharya-alpha-v0.1` model in the completion response. For that service, use
+the OpenAI-compatible provider with `MEDHARYA_AI_BASE_URL` set to the stable
+HTTPS service root plus `/v1` and `MEDHARYA_AI_MODEL=medharya-alpha-v0.1`.
+The temporary Cloudflare URLs shown by Colab are not a production hosting
+solution and must be treated as unavailable when they stop responding.
 
 ### Live research provider
 

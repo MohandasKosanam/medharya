@@ -42,6 +42,7 @@ providerServer.on("request", async (request, response) => {
       : userContent === "unknown citation response"
         ? "Model answer with [evidence:not-owned] that should remain model-assisted."
       : "Mock provider response grounded in the server-owned project context." } }],
+    model: "mock-model",
     usage: { prompt_tokens: 12, completion_tokens: 9, total_tokens: 21 },
   }));
 });
@@ -192,7 +193,7 @@ try {
     body: JSON.stringify({ projectId, message: "Return the provider-backed answer.", messageId: "provider-smoke-message" }),
   });
   const chatPayload = await chat.json();
-  if (chat.status !== 200 || chatPayload.source !== "model-assisted" || chatPayload.provider !== "openai-compatible" || chatPayload.usage?.totalTokens !== 21) {
+  if (chat.status !== 200 || chatPayload.source !== "model-assisted" || chatPayload.provider !== "openai-compatible" || chatPayload.model !== "mock-model" || chatPayload.providerStatus?.identityVerified !== true || chatPayload.usage?.totalTokens !== 21) {
     throw new Error("Provider-backed chat response was not normalized as expected.");
   }
   if (providerRequests < 2) throw new Error("Transient provider failure did not exercise the bounded retry.");

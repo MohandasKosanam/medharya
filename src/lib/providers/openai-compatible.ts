@@ -63,6 +63,7 @@ export interface GetConfiguredModelProviderOptions {
 
 export interface NormalizedOpenAICompatibleResponse {
   text: string;
+  model?: string;
   usage?: ModelProviderUsage;
 }
 
@@ -132,11 +133,13 @@ export function normalizeOpenAICompatibleResponse(value: unknown): NormalizedOpe
   const message = isRecord(firstChoice.message) ? firstChoice.message : null;
   const messageText = message ? contentText(message.content) : "";
   const text = boundedText(messageText, MAX_OUTPUT_CHARS) || boundedText(firstChoice.text, MAX_OUTPUT_CHARS);
+  const model = boundedText(value.model, 256);
   const usage = usageFromResponse(value.usage);
   if (!text) return null;
 
   return {
     text,
+    ...(model ? { model } : {}),
     ...(usage ? { usage } : {}),
   };
 }
@@ -263,12 +266,16 @@ async function requestOnce(
 
     const normalized = normalizeOpenAICompatibleResponse(payload);
     if (!normalized) return unavailable(PROVIDER_ERROR_REASONS.invalidResponse, model);
+    if (normalized.model && normalized.model !== model) {
+      return unavailable(PROVIDER_ERROR_REASONS.invalidResponse, model);
+    }
 
     return {
       status: "available",
       text: normalized.text,
       provider: "openai-compatible",
       model,
+      identityVerified: Boolean(normalized.model && normalized.model === model),
       ...(normalized.usage ? { usage: normalized.usage } : {}),
     };
   } catch (error) {
