@@ -27,6 +27,7 @@ const child = spawn(childCommand, childArgs, {
     MEDHARYA_DISABLE_EXTERNAL_PROVIDERS: "0",
     BRAVE_SEARCH_API_KEY: "",
     MEDHARYA_SERVER_DATA_FILE: dataFile,
+    MEDHARYA_REPOSITORY_TEST_MODE: "1",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });

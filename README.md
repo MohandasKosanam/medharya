@@ -16,8 +16,9 @@ ran.
 
 - Phase 1 responsive landing page and validated project brief.
 - Stable project workspace URLs such as `/workspace/<project-id>`.
-- Browser-local early persistence plus an optional account-backed file repository;
-  no managed database or cloud sync is claimed.
+- Browser-local early persistence plus an account-backed repository that uses
+  PostgreSQL when `DATABASE_URL` is configured and a local JSON file only for
+  non-production/offline development and tests.
 - Editable project brief with explicit save-and-regenerate behavior.
 - Context-aware chat with a clear deterministic fallback when no model provider
   is configured or a configured provider times out, is rate-limited, rejects its
@@ -77,10 +78,33 @@ Copy-Item .env.example .env.local
 The environment file may remain blank for the deterministic local-first mode.
 Never commit real credentials.
 
-For the account-backed prototype, set `MEDHARYA_SERVER_DATA_FILE` to a writable
-server path when the default `./data/medharya-server.json` is not appropriate.
-The repository is intentionally single-instance file-backed storage; it is not a
-production database or multi-instance session store.
+For local/offline account-backed development, set `MEDHARYA_SERVER_DATA_FILE` to
+a writable server path when the default `./data/medharya-server.json` is not
+appropriate. The JSON repository is disabled when `NODE_ENV=production`.
+
+For production account-backed persistence, set the server-only `DATABASE_URL`
+and apply the committed schema before starting the app:
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/001_initial.sql
+```
+
+To preserve an existing local JSON repository when moving to PostgreSQL, first
+apply the schema and then run the one-time, idempotent import command. It only
+inserts records whose IDs are not already present and rolls back on a conflict
+or validation error:
+
+```bash
+DATABASE_URL=postgres://... npm run db:import-json -- --source ./data/medharya-server.json
+```
+
+The command prints counts and never prints passwords, session tokens, project
+content, or database credentials. Do not run it against a production database
+until the source and target have been backed up and reviewed.
+
+If production starts without `DATABASE_URL`, repository-backed routes return a
+typed storage-unavailable response with HTTP 503 instead of treating a missing
+or unreadable filesystem as an empty database.
 
 ## Run in development
 
@@ -111,10 +135,16 @@ make test
 It runs:
 
 ```bash
+npm run test:repository
 npm run lint
 tsc --noEmit
 npm run build
 ```
+
+`test:repository` is an offline contract check. It exercises the local JSON
+repository's draft, signup/attachment, session, project read/update, and
+production-without-`DATABASE_URL` unavailable behavior; it does not require a
+live PostgreSQL server.
 
 For a running local server, the lightweight HTTP smoke check can be run with:
 
@@ -138,6 +168,10 @@ It verifies the landing page, chat input validation, workspace route,
 recommendation differentiation, explicit live-research availability states,
 server-owned project chat persistence and idempotency, authentication
 boundaries, and cross-user isolation. It does not require an external provider.
+
+The mocked adapter scripts use an isolated temporary JSON repository with
+`MEDHARYA_REPOSITORY_TEST_MODE=1`; that explicit test-only switch is not a
+production storage fallback.
 
 The bounded research engine can also be checked offline without a search key:
 
@@ -509,7 +543,7 @@ src/
     workspace-storage.ts       defensive browser persistence
     providers/                 server-side model adapter
     research/                  Brave adapter, safe retrieval, evidence, summaries
-    server/repository.ts       file-backed auth/project repository boundary
+    server/repository.ts       PostgreSQL/file auth and project repository boundary
   types/
     project.ts                 Phase 1 request contract
     workspace.ts               project and conversation memory
@@ -517,20 +551,24 @@ src/
     research.ts                research source/evidence/claim/citation contracts
 ```
 
-The browser owns early persistence so the prototype works without a database.
-Authenticated project chat and research use the server repository as the source
-of truth and update the browser as a cache. Local draft chat/research remains an
-explicit compatibility path and is labelled as not server-persisted.
+The browser owns early persistence so the deterministic local-first flow works
+without a database. Authenticated project chat and research use the server
+repository as the source of truth and update the browser as a cache. With
+`DATABASE_URL`, the repository persists users, anonymous drafts, projects,
+sessions, and JSON workspace payloads in PostgreSQL. Without it, only
+non-production/offline runtimes use the JSON compatibility repository. Local
+draft chat/research remains an explicit compatibility path and is labelled as
+not server-persisted.
 `ProjectWorkspace` and its storage adapter are deliberately separate from the UI
-so a database can replace the file repository later without rewriting the
+so the PostgreSQL and local JSON repository implementations share the same
 recommendation and conversation contracts.
 
 ## Data and security boundaries
 
 - Browser local storage is not secure multi-user storage and is not cloud sync.
-- Account-backed prototype records use a server-side JSON repository and opaque
-  hashed httpOnly session tokens; this is not production-grade
-  database infrastructure.
+- Account-backed records use opaque hashed httpOnly session tokens. Production
+  records require the PostgreSQL repository and the committed schema; the JSON
+  repository is limited to non-production/offline development and tests.
 - Model and search keys are server-only environment variables.
 - Incoming chat and research messages are length-limited and validated.
 - Project chat and research ignore client workspace snapshots when an
@@ -548,9 +586,9 @@ recommendation and conversation contracts.
 
 ## Known limitations
 
-- No managed database, account provider, multi-instance deployment, or production
-  scheduler. The account flow is a single-instance file-backed prototype with
-  ownership checks.
+- No managed database, account provider, or production scheduler is included.
+  PostgreSQL is supported through the server-only `DATABASE_URL` and committed
+  schema; local JSON remains a single-instance compatibility repository.
 - Catalogue links are curated but not live-verified in the repository.
 - Pricing and free-tier metadata are deliberately not asserted as current.
 - The deterministic fallback is useful for structured planning but is not an AI
@@ -574,24 +612,27 @@ recommendation and conversation contracts.
 
 1. Pin Node.js with `.nvmrc` or use the included Dockerfile.
 2. Run `npm ci` from the committed lockfile.
-3. For Alpha, deploy the Qwen3-8B base model and Medharya Alpha v0.1 QLoRA
+3. Set the server-only `DATABASE_URL` to the PostgreSQL database and apply
+   `db/migrations/001_initial.sql` with `psql`. Production must not rely on the
+   local JSON repository.
+4. For Alpha, deploy the Qwen3-8B base model and Medharya Alpha v0.1 QLoRA
    adapter as separate artifacts on a persistent, authenticated GPU service.
    The service must expose the `/health` and `/chat` contract documented above;
    Colab or a temporary tunnel is not a production deployment.
-4. For a Runpod worker that exposes the OpenAI-compatible contract, configure
+5. For a Runpod worker that exposes the OpenAI-compatible contract, configure
    `MEDHARYA_AI_PROVIDER`, `MEDHARYA_AI_API_KEY`, `MEDHARYA_AI_MODEL`, and
    `MEDHARYA_AI_BASE_URL` only in the deployment secret manager. Verify the
    worker's HTTPS URL, Bearer authentication, model name, and response schema
    before enabling it. A raw Runpod Serverless `/run` endpoint requires a
    separate adapter and is not enabled by this repository.
-5. Configure Alpha provider keys and service variables only in the deployment
+6. Configure Alpha provider keys and service variables only in the deployment
    secret manager. Use `MEDHARYA_AI_PROVIDER=alpha` only after the service
    health schema, model identity, adapter identity, and HTTPS/auth path are
    verified.
-6. Run `npm run test` before deploying.
-7. Run `npm run build` and start with `npm start`, or deploy the Docker image.
-8. Run `MEDHARYA_BASE_URL=<backend> npm run test:alpha:live` only after the
+7. Run `npm run test` before deploying.
+8. Run `npm run build` and start with `npm start`, or deploy the Docker image.
+9. Run `MEDHARYA_BASE_URL=<backend> npm run test:alpha:live` only after the
    configured Alpha service is reachable. This is the evidence required for a
    genuine integration response; mocked tests do not substitute for it.
-9. Keep the provider and research limits, data retention, and cost terms under
+10. Keep the provider and research limits, data retention, and cost terms under
    review before exposing the prototype to real user data.

@@ -8,6 +8,7 @@ import {
   getOwnedProject,
   RepositoryError,
   updateOwnedProjectWorkspace,
+  isRepositoryUnavailable,
 } from "@/lib/server/repository";
 import { appendResearchBundle, appendWorkspaceMessage, createStableId } from "@/lib/workspace";
 import type { ResearchResponse } from "@/types/research";
@@ -130,6 +131,9 @@ export async function POST(request: Request) {
       ...(projectId ? {} : { notice: "This local draft research response was not persisted by the server." }),
     }, { status });
   } catch (error) {
+    if (isRepositoryUnavailable(error)) {
+      return NextResponse.json({ error: error.message }, { status: 503 });
+    }
     if (error instanceof RepositoryError && error.code === "invalid-input") {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }

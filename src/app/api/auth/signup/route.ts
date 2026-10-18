@@ -6,7 +6,11 @@ import {
   registerUser,
   RepositoryError,
   setSessionCookie,
+  isRepositoryUnavailable,
 } from "@/lib/server/repository";
+import { readJsonBody, RequestBodyTooLargeError } from "@/lib/server/request";
+
+const MAX_REQUEST_BYTES = 16_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -14,7 +18,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export async function POST(request: Request) {
   try {
-    const body: unknown = await request.json();
+    const body: unknown = await readJsonBody(request, MAX_REQUEST_BYTES);
     if (!isRecord(body) || typeof body.email !== "string" || typeof body.password !== "string") {
       return NextResponse.json({ error: "Email and password are required." }, { status: 400 });
     }
@@ -41,6 +45,12 @@ export async function POST(request: Request) {
       { status: 201 },
     );
   } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return NextResponse.json({ error: error.message }, { status: 413 });
+    }
+    if (isRepositoryUnavailable(error)) {
+      return NextResponse.json({ error: error.message }, { status: 503 });
+    }
     if (error instanceof RepositoryError) {
       const status = error.code === "duplicate-user" ? 409 : error.code === "draft-attached" ? 409 : error.code === "not-found" ? 404 : 400;
       return NextResponse.json({ error: error.message }, { status });

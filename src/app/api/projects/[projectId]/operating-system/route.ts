@@ -5,6 +5,7 @@ import {
   parseOperatingSystemInput,
   RepositoryError,
   updateOwnedProjectOperatingSystem,
+  isRepositoryUnavailable,
 } from "@/lib/server/repository";
 
 interface ProjectRouteContext {
@@ -12,15 +13,15 @@ interface ProjectRouteContext {
 }
 
 export async function PATCH(request: Request, context: ProjectRouteContext) {
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "Authentication is required." }, { status: 401 });
-
-  const { projectId } = await context.params;
-  if (!projectId || projectId.length > 200) {
-    return NextResponse.json({ error: "The project id is invalid." }, { status: 400 });
-  }
-
   try {
+    const user = await getCurrentUser();
+    if (!user) return NextResponse.json({ error: "Authentication is required." }, { status: 401 });
+
+    const { projectId } = await context.params;
+    if (!projectId || projectId.length > 200) {
+      return NextResponse.json({ error: "The project id is invalid." }, { status: 400 });
+    }
+
     const contentLength = Number(request.headers.get("content-length") ?? "0");
     if (contentLength > 1_500_000) {
       return NextResponse.json({ error: "The operating-system update is too large." }, { status: 413 });
@@ -49,6 +50,9 @@ export async function PATCH(request: Request, context: ProjectRouteContext) {
     if (!project) return NextResponse.json({ error: "Project not found." }, { status: 404 });
     return NextResponse.json({ project: project.workspace });
   } catch (error) {
+    if (isRepositoryUnavailable(error)) {
+      return NextResponse.json({ error: error.message }, { status: 503 });
+    }
     if (error instanceof RepositoryError && error.code === "invalid-input") {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }

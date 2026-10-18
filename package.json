@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "npm run lint && tsc --noEmit && npm run build",
+    "test": "npm run test:repository && npm run lint && tsc --noEmit && npm run build",
+    "test:repository": "node --no-warnings --experimental-strip-types --import ./scripts/register-repository-loader.mjs scripts/repository-contract-smoke.mjs",
+    "db:import-json": "node --no-warnings --experimental-strip-types --import ./scripts/register-repository-loader.mjs scripts/import-json-repository.mjs",
     "test:smoke": "npm run test:research-engine && node scripts/phase2-smoke.mjs && node scripts/next-phase-smoke.mjs && node scripts/intelligence-smoke.mjs",
     "test:research-engine": "node --no-warnings --experimental-strip-types scripts/research-engine-smoke.mjs",
     "test:provider": "node scripts/provider-integration-smoke.mjs",
@@ -19,12 +21,14 @@
   },
   "dependencies": {
     "next": "16.4.0",
+    "pg": "^8.23.1",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",
     "@types/node": "^20",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

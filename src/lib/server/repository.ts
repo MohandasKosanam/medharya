@@ -1,11 +1,12 @@
-// Server-only boundary. This prototype deliberately uses one local JSON file and
-// an in-process write queue; it is not a multi-instance or production datastore.
-// Do not import this module from client components or browser-facing modules.
+// Server-only boundary. PostgreSQL is the production repository; the JSON file is
+// retained only for local/offline development and tests. Do not import this module
+// from client components or browser-facing modules.
 import { cookies } from "next/headers";
 import { createHash, randomBytes, randomUUID, scrypt as nodeScrypt, timingSafeEqual, type ScryptOptions } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { Pool, type PoolClient } from "pg";
 
 import { applyWorkspaceRequestPatch, createProjectWorkspace } from "@/lib/workspace";
 import { generateServerSolutionPlan } from "@/lib/server/recommendations";
@@ -58,20 +59,38 @@ export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 export const ANONYMOUS_DRAFT_TTL_SECONDS = 60 * 60 * 24;
 const PASSWORD_HASH_VERSION = "scrypt-v1";
 const PASSWORD_KEY_LENGTH = 64;
+export const DATABASE_UNAVAILABLE_MESSAGE =
+  "Persistent storage is unavailable. Configure DATABASE_URL and apply db/migrations/001_initial.sql before starting production.";
+
+export type RepositoryBackend = "postgres" | "json" | "unavailable";
 
 export class RepositoryError extends Error {
+  public readonly code:
+    | "invalid-input"
+    | "duplicate-user"
+    | "invalid-credentials"
+    | "draft-attached"
+    | "not-found"
+    | "unavailable";
+
   constructor(
-    public readonly code:
+    code:
       | "invalid-input"
       | "duplicate-user"
       | "invalid-credentials"
       | "draft-attached"
-      | "not-found",
+      | "not-found"
+      | "unavailable",
     message: string,
   ) {
     super(message);
     this.name = "RepositoryError";
+    this.code = code;
   }
+}
+
+export function isRepositoryUnavailable(error: unknown): error is RepositoryError {
+  return error instanceof RepositoryError && error.code === "unavailable";
 }
 
 export interface CookieStoreLike {
@@ -96,6 +115,18 @@ function emptyDatabase(): ServerDatabase {
     projects: [],
     sessions: [],
   };
+}
+
+export function getDatabaseUrl() {
+  const databaseUrl = process.env.DATABASE_URL?.trim();
+  return databaseUrl || null;
+}
+
+export function getRepositoryBackend(): RepositoryBackend {
+  if (getDatabaseUrl()) return "postgres";
+  const explicitTestRepository =
+    process.env.MEDHARYA_REPOSITORY_TEST_MODE === "1" && Boolean(process.env.MEDHARYA_SERVER_DATA_FILE?.trim());
+  return process.env.NODE_ENV === "production" && !explicitTestRepository ? "unavailable" : "json";
 }
 
 export function getServerDataFilePath() {
@@ -171,7 +202,7 @@ function isStoredSession(value: unknown): value is StoredSession {
   );
 }
 
-function defensivelyParseDatabase(value: unknown): ServerDatabase {
+export function parseServerDatabase(value: unknown): ServerDatabase {
   if (!isRecord(value)) return emptyDatabase();
 
   return {
@@ -185,24 +216,227 @@ function defensivelyParseDatabase(value: unknown): ServerDatabase {
   };
 }
 
-/** Malformed or missing data is treated as an empty prototype database. */
-export async function readServerDatabase(): Promise<ServerDatabase> {
+function rowString(row: Record<string, unknown>, key: string) {
+  return typeof row[key] === "string" ? row[key] as string : "";
+}
+
+function rowTimestamp(row: Record<string, unknown>, key: string) {
+  const value = row[key];
+  if (value instanceof Date) return value.toISOString();
+  return typeof value === "string" ? value : "";
+}
+
+function rowJson(row: Record<string, unknown>, key: string): unknown {
+  const value = row[key];
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+async function queryRows(executor: Pool | PoolClient, text: string, values: unknown[] = []) {
+  const result = await executor.query(text, values);
+  return result.rows as Array<Record<string, unknown>>;
+}
+
+async function readPostgresDatabase(executor: Pool | PoolClient): Promise<ServerDatabase> {
+  const users = await queryRows(
+    executor,
+    `SELECT id, email, display_name AS "displayName", password_hash AS "passwordHash", created_at AS "createdAt"
+       FROM users`,
+  );
+  const drafts = await queryRows(
+    executor,
+    `SELECT id, request, created_at AS "createdAt", updated_at AS "updatedAt", expires_at AS "expiresAt",
+            attached_user_id AS "attachedUserId", attached_project_id AS "attachedProjectId"
+       FROM anonymous_drafts`,
+  );
+  const projects = await queryRows(
+    executor,
+    `SELECT id, owner_user_id AS "ownerUserId", workspace, created_at AS "createdAt", updated_at AS "updatedAt"
+       FROM projects`,
+  );
+  const sessions = await queryRows(
+    executor,
+    `SELECT id, user_id AS "userId", token_hash AS "tokenHash", created_at AS "createdAt", expires_at AS "expiresAt"
+       FROM sessions`,
+  );
+
+  return parseServerDatabase({
+    version: 1,
+    users: users.map((row) => ({
+      id: rowString(row, "id"),
+      email: rowString(row, "email"),
+      displayName: rowString(row, "displayName"),
+      passwordHash: rowString(row, "passwordHash"),
+      createdAt: rowTimestamp(row, "createdAt"),
+    })),
+    anonymousIdeaDrafts: drafts.map((row) => ({
+      id: rowString(row, "id"),
+      request: rowJson(row, "request"),
+      createdAt: rowTimestamp(row, "createdAt"),
+      updatedAt: rowTimestamp(row, "updatedAt"),
+      expiresAt: rowTimestamp(row, "expiresAt"),
+      attachedUserId: row.attachedUserId === null ? null : rowString(row, "attachedUserId"),
+      attachedProjectId: row.attachedProjectId === null ? null : rowString(row, "attachedProjectId"),
+    })),
+    projects: projects.map((row) => ({
+      id: rowString(row, "id"),
+      ownerUserId: rowString(row, "ownerUserId"),
+      workspace: rowJson(row, "workspace"),
+      createdAt: rowTimestamp(row, "createdAt"),
+      updatedAt: rowTimestamp(row, "updatedAt"),
+    })),
+    sessions: sessions.map((row) => ({
+      id: rowString(row, "id"),
+      userId: rowString(row, "userId"),
+      tokenHash: rowString(row, "tokenHash"),
+      createdAt: rowTimestamp(row, "createdAt"),
+      expiresAt: rowTimestamp(row, "expiresAt"),
+    })),
+  });
+}
+
+async function replacePostgresDatabase(executor: Pool | PoolClient, database: ServerDatabase) {
+  const normalized = parseServerDatabase(database);
+
+  // The caller holds the repository transaction lock. Delete in dependency order,
+  // then insert in parent-before-child order so the schema's foreign keys remain
+  // useful even though this compatibility adapter stores a full snapshot.
+  await executor.query("DELETE FROM sessions");
+  await executor.query("DELETE FROM anonymous_drafts");
+  await executor.query("DELETE FROM projects");
+  await executor.query("DELETE FROM users");
+
+  for (const user of normalized.users) {
+    await executor.query(
+      `INSERT INTO users (id, email, display_name, password_hash, created_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [user.id, user.email, user.displayName, user.passwordHash, user.createdAt],
+    );
+  }
+  for (const project of normalized.projects) {
+    await executor.query(
+      `INSERT INTO projects (id, owner_user_id, workspace, created_at, updated_at)
+       VALUES ($1, $2, $3::jsonb, $4, $5)`,
+      [project.id, project.ownerUserId, JSON.stringify(project.workspace), project.createdAt, project.updatedAt],
+    );
+  }
+  for (const draft of normalized.anonymousIdeaDrafts) {
+    await executor.query(
+      `INSERT INTO anonymous_drafts
+        (id, request, created_at, updated_at, expires_at, attached_user_id, attached_project_id)
+       VALUES ($1, $2::jsonb, $3, $4, $5, $6, $7)`,
+      [
+        draft.id,
+        JSON.stringify(draft.request),
+        draft.createdAt,
+        draft.updatedAt,
+        draft.expiresAt,
+        draft.attachedUserId,
+        draft.attachedProjectId,
+      ],
+    );
+  }
+  for (const session of normalized.sessions) {
+    await executor.query(
+      `INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [session.id, session.userId, session.tokenHash, session.createdAt, session.expiresAt],
+    );
+  }
+}
+
+let postgresPool: Pool | null = null;
+let postgresPoolUrl: string | null = null;
+
+function getPostgresPool() {
+  const databaseUrl = getDatabaseUrl();
+  if (!databaseUrl) throw new RepositoryError("unavailable", DATABASE_UNAVAILABLE_MESSAGE);
+  if (!postgresPool || postgresPoolUrl !== databaseUrl) {
+    postgresPool = new Pool({
+      connectionString: databaseUrl,
+      application_name: "medharya",
+      max: 10,
+      connectionTimeoutMillis: 5_000,
+      idleTimeoutMillis: 30_000,
+    });
+    postgresPool.on("error", () => {
+      // Request-scoped queries report failures to the typed repository boundary;
+      // this listener prevents an idle-client error from becoming an uncaught
+      // process exception.
+    });
+    postgresPoolUrl = databaseUrl;
+  }
+  return postgresPool;
+}
+
+function normalizeStorageError(error: unknown): RepositoryError {
+  if (error instanceof RepositoryError) return error;
+  if (
+    isRecord(error) &&
+    error.code === "23505" &&
+    typeof error.constraint === "string" &&
+    error.constraint.includes("email")
+  ) {
+    return new RepositoryError("duplicate-user", "An account already exists for that email.");
+  }
+  return new RepositoryError("unavailable", DATABASE_UNAVAILABLE_MESSAGE);
+}
+
+async function withPostgresTransaction<T>(operation: (client: PoolClient) => Promise<T>) {
+  let client: PoolClient | undefined;
+  let started = false;
+  try {
+    client = await getPostgresPool().connect();
+    await client.query("BEGIN");
+    started = true;
+    // Keep the snapshot adapter safe across multiple app instances. The lock is
+    // transaction-scoped and does not involve any external model/provider call.
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('medharya:repository'))");
+    const result = await operation(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    if (client && started) await client.query("ROLLBACK").catch(() => undefined);
+    throw normalizeStorageError(error);
+  } finally {
+    client?.release();
+  }
+}
+
+async function readJsonServerDatabase(): Promise<ServerDatabase> {
   try {
     const raw = await readFile(/*turbopackIgnore: true*/ getServerDataFilePath(), "utf8");
-    return defensivelyParseDatabase(JSON.parse(raw) as unknown);
+    return parseServerDatabase(JSON.parse(raw) as unknown);
   } catch {
+    // Missing or malformed JSON is an intentionally local/offline empty store.
     return emptyDatabase();
   }
 }
 
-/** Rename replaces the destination atomically after the complete JSON is written. */
-export async function writeServerDatabase(database: ServerDatabase): Promise<void> {
+/** Read from PostgreSQL in configured environments, or the local JSON store offline. */
+export async function readServerDatabase(): Promise<ServerDatabase> {
+  const backend = getRepositoryBackend();
+  if (backend === "unavailable") throw new RepositoryError("unavailable", DATABASE_UNAVAILABLE_MESSAGE);
+  if (backend === "json") return readJsonServerDatabase();
+
+  try {
+    return await readPostgresDatabase(getPostgresPool());
+  } catch (error) {
+    throw normalizeStorageError(error);
+  }
+}
+
+async function writeJsonServerDatabase(database: ServerDatabase): Promise<void> {
   const filePath = getServerDataFilePath();
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   await mkdir(dirname(filePath), { recursive: true });
 
   try {
-    await writeFile(temporaryPath, `${JSON.stringify(defensivelyParseDatabase(database), null, 2)}\n`, {
+    await writeFile(temporaryPath, `${JSON.stringify(parseServerDatabase(database), null, 2)}\n`, {
       encoding: "utf8",
       mode: 0o600,
     });
@@ -212,13 +446,32 @@ export async function writeServerDatabase(database: ServerDatabase): Promise<voi
   }
 }
 
+/** Persist a complete database snapshot using the configured repository. */
+export async function writeServerDatabase(database: ServerDatabase): Promise<void> {
+  const backend = getRepositoryBackend();
+  if (backend === "unavailable") throw new RepositoryError("unavailable", DATABASE_UNAVAILABLE_MESSAGE);
+  if (backend === "json") return writeJsonServerDatabase(database);
+  await withPostgresTransaction((client) => replacePostgresDatabase(client, database));
+}
+
 let mutationQueue: Promise<void> = Promise.resolve();
 
 async function mutateDatabase<T>(mutator: (database: ServerDatabase) => T | Promise<T>): Promise<T> {
+  const backend = getRepositoryBackend();
+  if (backend === "unavailable") throw new RepositoryError("unavailable", DATABASE_UNAVAILABLE_MESSAGE);
+  if (backend === "postgres") {
+    return withPostgresTransaction(async (client) => {
+      const database = await readPostgresDatabase(client);
+      const result = await mutator(database);
+      await replacePostgresDatabase(client, database);
+      return result;
+    });
+  }
+
   const operation = mutationQueue.then(async () => {
-    const database = await readServerDatabase();
+    const database = await readJsonServerDatabase();
     const result = await mutator(database);
-    await writeServerDatabase(database);
+    await writeJsonServerDatabase(database);
     return result;
   });
   mutationQueue = operation.then(
@@ -463,6 +716,40 @@ export async function registerUser(input: SignupInput) {
   }
   const passwordHash = await hashPassword(input.password);
 
+  // Read and perform any optional model enhancement before opening the database
+  // transaction. The transaction below still re-checks the draft and account so
+  // concurrent signups cannot attach the same draft twice.
+  const snapshot = await readServerDatabase();
+  const snapshotDraft = input.anonymousDraftId
+    ? snapshot.anonymousIdeaDrafts.find((candidate) => candidate.id === input.anonymousDraftId)
+    : undefined;
+  if (input.anonymousDraftId && !snapshotDraft) {
+    throw new RepositoryError("not-found", "The anonymous draft was not found.");
+  }
+  const snapshotUser = snapshot.users.find((candidate) => candidate.email === email);
+  if (snapshotUser) {
+    if (
+      snapshotDraft?.attachedUserId === snapshotUser.id &&
+      (await verifyPassword(input.password, snapshotUser.passwordHash))
+    ) {
+      // The transaction below re-reads the same state and creates only the
+      // replacement session for an idempotent signup replay.
+    } else {
+      throw new RepositoryError("duplicate-user", "An account already exists for that email.");
+    }
+  }
+
+  const user: StoredAuthUser = {
+    id: `user_${randomUUID()}`,
+    email,
+    displayName: input.displayName?.trim() || email.split("@")[0] || "Medharya user",
+    passwordHash,
+    createdAt: now(),
+  };
+  const preparedProject = snapshotDraft && !snapshotDraft.attachedUserId
+    ? await enhanceOwnedProjectPlan(projectFromDraft(snapshotDraft, user.id))
+    : null;
+
   return mutateDatabase(async (database) => {
     const draft = input.anonymousDraftId
       ? database.anonymousIdeaDrafts.find((candidate) => candidate.id === input.anonymousDraftId)
@@ -487,19 +774,15 @@ export async function registerUser(input: SignupInput) {
 
     if (draft?.attachedUserId) throw new RepositoryError("draft-attached", "The anonymous draft has already been attached.");
 
-    const timestamp = now();
-    const user: StoredAuthUser = {
-      id: `user_${randomUUID()}`,
-      email,
-      displayName: input.displayName?.trim() || email.split("@")[0] || "Medharya user",
-      passwordHash,
-      createdAt: timestamp,
-    };
+    const timestamp = user.createdAt;
     database.users.push(user);
 
     let project: OwnedProject | null = null;
     if (draft) {
-      project = await enhanceOwnedProjectPlan(projectFromDraft(draft, user.id));
+      const preparedRequestMatches = preparedProject && JSON.stringify(preparedProject.workspace.request) === JSON.stringify(draft.request);
+      project = preparedRequestMatches
+        ? { ...preparedProject, ownerUserId: user.id }
+        : projectFromDraft(draft, user.id);
       database.projects.push(project);
       draft.attachedUserId = user.id;
       draft.attachedProjectId = project.id;
@@ -550,7 +833,12 @@ export async function findUserBySessionToken(token: string | undefined) {
 }
 
 export async function revokeSessionToken(token: string | undefined) {
-  if (!token) return;
+  if (!token) {
+    if (getRepositoryBackend() === "unavailable") {
+      throw new RepositoryError("unavailable", DATABASE_UNAVAILABLE_MESSAGE);
+    }
+    return;
+  }
   const hash = tokenDigest(token);
   await mutateDatabase((database) => {
     database.sessions = database.sessions.filter((session) => !equalDigest(session.tokenHash, hash));
@@ -906,6 +1194,16 @@ export async function updateOwnedProjectOperatingSystem(
 
 /** Idempotent by anonymous draft id: a repeated attach returns the original project. */
 export async function attachAnonymousDraftToUser(draftId: string, userId: string) {
+  const snapshot = await readServerDatabase();
+  const snapshotDraft = snapshot.anonymousIdeaDrafts.find((candidate) => candidate.id === draftId);
+  if (!snapshotDraft) throw new RepositoryError("not-found", "The anonymous draft was not found.");
+  if (snapshotDraft.attachedUserId && snapshotDraft.attachedUserId !== userId) {
+    throw new RepositoryError("draft-attached", "The anonymous draft has already been attached.");
+  }
+  const preparedProject = snapshotDraft.attachedProjectId
+    ? null
+    : await enhanceOwnedProjectPlan(projectFromDraft(snapshotDraft, userId));
+
   return mutateDatabase(async (database) => {
     const draft = database.anonymousIdeaDrafts.find((candidate) => candidate.id === draftId);
     if (!draft) throw new RepositoryError("not-found", "The anonymous draft was not found.");
@@ -913,7 +1211,10 @@ export async function attachAnonymousDraftToUser(draftId: string, userId: string
     if (draft.attachedProjectId) {
       return database.projects.find((project) => project.id === draft.attachedProjectId) || null;
     }
-    const project = await enhanceOwnedProjectPlan(projectFromDraft(draft, userId));
+    const preparedRequestMatches = preparedProject && JSON.stringify(preparedProject.workspace.request) === JSON.stringify(draft.request);
+    const project = preparedRequestMatches
+      ? { ...preparedProject, ownerUserId: userId }
+      : projectFromDraft(draft, userId);
     database.projects.push(project);
     draft.attachedUserId = userId;
     draft.attachedProjectId = project.id;
