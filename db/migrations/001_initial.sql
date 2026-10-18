@@ -4,12 +4,16 @@
 
 BEGIN;
 
-CREATE TABLE IF NOT EXISTS schema_migrations (
+-- Keep Medharya isolated from unrelated tables already present in a shared
+-- Supabase project (for example, a public.projects table with UUID ids).
+CREATE SCHEMA IF NOT EXISTS medharya;
+
+CREATE TABLE IF NOT EXISTS medharya.schema_migrations (
   version text PRIMARY KEY,
   applied_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE IF NOT EXISTS medharya.users (
   id text PRIMARY KEY,
   email text NOT NULL,
   display_name text NOT NULL,
@@ -22,9 +26,9 @@ CREATE TABLE IF NOT EXISTS users (
   CONSTRAINT users_email_unique UNIQUE (email)
 );
 
-CREATE TABLE IF NOT EXISTS projects (
+CREATE TABLE IF NOT EXISTS medharya.projects (
   id text PRIMARY KEY,
-  owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  owner_user_id text NOT NULL REFERENCES medharya.users(id) ON DELETE CASCADE,
   workspace jsonb NOT NULL,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
@@ -33,14 +37,14 @@ CREATE TABLE IF NOT EXISTS projects (
   CONSTRAINT projects_timestamps_order CHECK (updated_at >= created_at)
 );
 
-CREATE TABLE IF NOT EXISTS anonymous_drafts (
+CREATE TABLE IF NOT EXISTS medharya.anonymous_drafts (
   id text PRIMARY KEY,
   request jsonb NOT NULL,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
   expires_at timestamptz NOT NULL,
-  attached_user_id text REFERENCES users(id) ON DELETE CASCADE,
-  attached_project_id text UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+  attached_user_id text REFERENCES medharya.users(id) ON DELETE CASCADE,
+  attached_project_id text UNIQUE REFERENCES medharya.projects(id) ON DELETE CASCADE,
   CONSTRAINT anonymous_drafts_id_length CHECK (char_length(id) BETWEEN 1 AND 200),
   CONSTRAINT anonymous_drafts_request_object CHECK (jsonb_typeof(request) = 'object'),
   CONSTRAINT anonymous_drafts_timestamps_order CHECK (updated_at >= created_at),
@@ -51,9 +55,9 @@ CREATE TABLE IF NOT EXISTS anonymous_drafts (
   )
 );
 
-CREATE TABLE IF NOT EXISTS sessions (
+CREATE TABLE IF NOT EXISTS medharya.sessions (
   id text PRIMARY KEY,
-  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES medharya.users(id) ON DELETE CASCADE,
   token_hash text NOT NULL UNIQUE,
   created_at timestamptz NOT NULL,
   expires_at timestamptz NOT NULL,
@@ -64,14 +68,14 @@ CREATE TABLE IF NOT EXISTS sessions (
   CONSTRAINT sessions_expiry_order CHECK (expires_at > created_at)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users (lower(email));
-CREATE INDEX IF NOT EXISTS projects_owner_updated_idx ON projects (owner_user_id, updated_at DESC);
-CREATE INDEX IF NOT EXISTS anonymous_drafts_expiry_idx ON anonymous_drafts (expires_at);
-CREATE INDEX IF NOT EXISTS anonymous_drafts_attached_user_idx ON anonymous_drafts (attached_user_id);
-CREATE INDEX IF NOT EXISTS sessions_user_expiry_idx ON sessions (user_id, expires_at);
-CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions (expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON medharya.users (lower(email));
+CREATE INDEX IF NOT EXISTS projects_owner_updated_idx ON medharya.projects (owner_user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS anonymous_drafts_expiry_idx ON medharya.anonymous_drafts (expires_at);
+CREATE INDEX IF NOT EXISTS anonymous_drafts_attached_user_idx ON medharya.anonymous_drafts (attached_user_id);
+CREATE INDEX IF NOT EXISTS sessions_user_expiry_idx ON medharya.sessions (user_id, expires_at);
+CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON medharya.sessions (expires_at);
 
-INSERT INTO schema_migrations (version)
+INSERT INTO medharya.schema_migrations (version)
 VALUES ('001_initial')
 ON CONFLICT (version) DO NOTHING;
 

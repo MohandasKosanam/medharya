@@ -312,27 +312,36 @@ async function queryRows(executor: Pool | PoolClient, text: string, values: unkn
   return result.rows as Array<Record<string, unknown>>;
 }
 
+// Use a dedicated schema so a shared Supabase project can keep unrelated
+// public tables (including projects with UUID primary keys) untouched.
+const POSTGRES_TABLES = {
+  users: "medharya.users",
+  drafts: "medharya.anonymous_drafts",
+  projects: "medharya.projects",
+  sessions: "medharya.sessions",
+} as const;
+
 async function readPostgresDatabase(executor: Pool | PoolClient): Promise<ServerDatabase> {
   const users = await queryRows(
     executor,
     `SELECT id, email, display_name AS "displayName", password_hash AS "passwordHash", created_at AS "createdAt"
-       FROM users`,
+       FROM ${POSTGRES_TABLES.users}`,
   );
   const drafts = await queryRows(
     executor,
     `SELECT id, request, created_at AS "createdAt", updated_at AS "updatedAt", expires_at AS "expiresAt",
             attached_user_id AS "attachedUserId", attached_project_id AS "attachedProjectId"
-       FROM anonymous_drafts`,
+       FROM ${POSTGRES_TABLES.drafts}`,
   );
   const projects = await queryRows(
     executor,
     `SELECT id, owner_user_id AS "ownerUserId", workspace, created_at AS "createdAt", updated_at AS "updatedAt"
-       FROM projects`,
+       FROM ${POSTGRES_TABLES.projects}`,
   );
   const sessions = await queryRows(
     executor,
     `SELECT id, user_id AS "userId", token_hash AS "tokenHash", created_at AS "createdAt", expires_at AS "expiresAt"
-       FROM sessions`,
+       FROM ${POSTGRES_TABLES.sessions}`,
   );
 
   return parseServerDatabase({
@@ -376,28 +385,28 @@ async function replacePostgresDatabase(executor: Pool | PoolClient, database: Se
   // The caller holds the repository transaction lock. Delete in dependency order,
   // then insert in parent-before-child order so the schema's foreign keys remain
   // useful even though this compatibility adapter stores a full snapshot.
-  await executor.query("DELETE FROM sessions");
-  await executor.query("DELETE FROM anonymous_drafts");
-  await executor.query("DELETE FROM projects");
-  await executor.query("DELETE FROM users");
+  await executor.query(`DELETE FROM ${POSTGRES_TABLES.sessions}`);
+  await executor.query(`DELETE FROM ${POSTGRES_TABLES.drafts}`);
+  await executor.query(`DELETE FROM ${POSTGRES_TABLES.projects}`);
+  await executor.query(`DELETE FROM ${POSTGRES_TABLES.users}`);
 
   for (const user of normalized.users) {
     await executor.query(
-      `INSERT INTO users (id, email, display_name, password_hash, created_at)
+      `INSERT INTO ${POSTGRES_TABLES.users} (id, email, display_name, password_hash, created_at)
        VALUES ($1, $2, $3, $4, $5)`,
       [user.id, user.email, user.displayName, user.passwordHash, user.createdAt],
     );
   }
   for (const project of normalized.projects) {
     await executor.query(
-      `INSERT INTO projects (id, owner_user_id, workspace, created_at, updated_at)
+      `INSERT INTO ${POSTGRES_TABLES.projects} (id, owner_user_id, workspace, created_at, updated_at)
        VALUES ($1, $2, $3::jsonb, $4, $5)`,
       [project.id, project.ownerUserId, JSON.stringify(project.workspace), project.createdAt, project.updatedAt],
     );
   }
   for (const draft of normalized.anonymousIdeaDrafts) {
     await executor.query(
-      `INSERT INTO anonymous_drafts
+      `INSERT INTO ${POSTGRES_TABLES.drafts}
         (id, request, created_at, updated_at, expires_at, attached_user_id, attached_project_id)
        VALUES ($1, $2::jsonb, $3, $4, $5, $6, $7)`,
       [
@@ -413,7 +422,7 @@ async function replacePostgresDatabase(executor: Pool | PoolClient, database: Se
   }
   for (const session of normalized.sessions) {
     await executor.query(
-      `INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at)
+      `INSERT INTO ${POSTGRES_TABLES.sessions} (id, user_id, token_hash, created_at, expires_at)
        VALUES ($1, $2, $3, $4, $5)`,
       [session.id, session.userId, session.tokenHash, session.createdAt, session.expiresAt],
     );
