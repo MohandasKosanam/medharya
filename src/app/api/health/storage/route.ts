@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { connection, NextResponse } from "next/server";
 
 import {
   checkPostgresStorage,
@@ -17,6 +17,10 @@ const noStore = {
  * from the database driver.
  */
 export async function GET() {
+  // The readiness check must run against the request-time database, never
+  // while Vercel is prerendering the route during the production build.
+  await connection();
+
   const backend = getRepositoryBackend();
   if (backend !== "postgres") {
     return NextResponse.json({ status: "unavailable", backend }, { status: 503, ...noStore });
