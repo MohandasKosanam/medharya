@@ -13,6 +13,7 @@ import {
   toMedharyaAlphaProviderStatus,
 } from "./alpha";
 import { getConfiguredOllamaProvider, getOllamaProviderStatus } from "./ollama";
+import { getConfiguredTogetherProvider, getTogetherProviderStatus } from "./together";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -353,7 +354,14 @@ export function selectModelProvider(
   if (requestedProvider === "ollama") {
     return getConfiguredOllamaProvider({ env, request });
   }
+  if (requestedProvider === "together" || requestedProvider === "together-ai") {
+    return getConfiguredTogetherProvider({ env, request });
+  }
   if (requestedProvider === "disabled" || requestedProvider === "none" || requestedProvider === "off") return null;
+
+  if (!requestedProvider && configuredValue(env.TOGETHER_API_KEY) && configuredValue(env.TOGETHER_MODEL)) {
+    return getConfiguredTogetherProvider({ env, request });
+  }
 
   const apiKey = configuredValue(env.MEDHARYA_AI_API_KEY);
   const model = configuredValue(env.MEDHARYA_AI_MODEL);
@@ -392,6 +400,9 @@ export function selectedModelProviderStatus(
   if (requestedProvider === "ollama") {
     return getOllamaProviderStatus({ env });
   }
+  if (requestedProvider === "together" || requestedProvider === "together-ai") {
+    return getTogetherProviderStatus({ env });
+  }
   if (requestedProvider === "disabled" || requestedProvider === "none" || requestedProvider === "off") {
     return {
       provider: "none",
@@ -399,6 +410,10 @@ export function selectedModelProviderStatus(
       reason: PROVIDER_ERROR_REASONS.missingConfig,
       identityVerified: false,
     };
+  }
+
+  if (!requestedProvider && configuredValue(env.TOGETHER_API_KEY) && configuredValue(env.TOGETHER_MODEL)) {
+    return getTogetherProviderStatus({ env });
   }
 
   const apiKey = configuredValue(env.MEDHARYA_AI_API_KEY);

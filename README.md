@@ -264,6 +264,61 @@ provider, validates the result, persists the conversation, and returns the
 existing frontend response shape. This repository does not contain a separate
 Express entry point; the App Router handlers are the current Node.js backend.
 
+Set `MEDHARYA_AI_PROVIDER=together` to select Together AI. The adapter uses
+Together's documented OpenAI-compatible endpoint and requires a server-side
+API key and an explicit namespaced Together model ID:
+
+```dotenv
+MEDHARYA_AI_PROVIDER=together
+TOGETHER_API_KEY=replace-me
+TOGETHER_MODEL=provider/model-name
+TOGETHER_BASE_URL=https://api.together.ai/v1
+TOGETHER_TIMEOUT_MS=15000
+```
+
+`TOGETHER_MODEL` is intentionally required; Medharya does not guess a model
+name or silently substitute a different provider. Together failures preserve
+the deterministic fallback and are reported through the existing provider
+status contract. The browser calls only `/api/chat`; Together credentials are
+read on the server and never stored in the workspace.
+
+For local development, put these values in the repository-root `.env.local`
+file. Next.js loads root `.env.local` automatically for `next dev`; no custom
+dotenv loader is needed. Existing process variables take precedence, followed
+by `.env.development.local`, `.env.local`, `.env.development`, and `.env`.
+Even an inherited blank variable overrides the matching dotenv value.
+`.env.example` is only a template; it is never loaded as runtime configuration.
+Test mode ignores `.env.local`. Changes to the environment of a parent process
+require restarting its development server with the new environment.
+
+On Node.js server startup, `src/instrumentation.ts` reports only an allowlisted
+provider/state, presence and validation flags, bounded timeout, and fixed missing
+variable names. It deliberately excludes **all raw values**, including model
+IDs and endpoint URLs, because those fields could contain accidentally pasted
+secrets. `configured`/`ready` here means configuration is complete, not successful
+authentication or inference; `inferenceVerified` remains false at startup.
+
+Missing credentials or model IDs, invalid timeouts, URL credentials/query strings,
+and non-loopback HTTP endpoints fail closed without sending an inference request.
+HTTPS is required except for loopback mocked endpoints. Explicit provider selection
+is respected even when Together variables are also present. Canonical Together
+variables take precedence over legacy `MEDHARYA_TOGETHER_*`, then supported
+generic `MEDHARYA_AI_*` aliases; blank entries are treated as absent by the adapter.
+
+The Together model ID is not guessed or replaced. When credentials are
+available, verify the exact selected ID against Together's current `/v1/models`
+catalogue before inference; an unavailable model is reported as an error rather
+than silently substituted. Catalogue validation is a separate verification step,
+not a startup network request. A catalogue listing alone does not prove inference.
+
+`npm run test:provider-config` uses synthetic credentials and isolated temporary
+dotenv files to check Next.js loading/precedence, provider selection, validation,
+secret-safe startup output, and mocked inference. It does not read or overwrite
+the repository's `.env.local`, and makes no external request. It also runs in
+`npm test`. `.env*` (except `.env.example`), common private-key files, `.secrets/`,
+and `.credentials/` are ignored by Git. Ignore rules protect ordinary staging,
+not deliberate `git add -f` or files already tracked; review staged changes too.
+
 Set `MEDHARYA_AI_PROVIDER=alpha` to select Medharya Alpha. Leave it unset or
 use `openai-compatible` to preserve the existing provider path.
 
