@@ -6,14 +6,14 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { getProviderStartupDiagnostics } from "../src/lib/providers/startup.ts";
-import { getTogetherConfigurationDiagnostics, requestTogether } from "../src/lib/providers/together.ts";
+import { getOpenRouterConfigurationDiagnostics, requestOpenRouter } from "../src/lib/providers/openrouter.ts";
 import { selectModelProvider, selectedModelProviderStatus } from "../src/lib/providers/openai-compatible.ts";
 
 // Synthetic inputs only. Never load the user's environment or contact a provider.
 const env = {
-  MEDHARYA_AI_PROVIDER: "together",
-  TOGETHER_API_KEY: "fixture-key-not-a-credential",
-  TOGETHER_MODEL: "fixture-org/selected-model",
+  MEDHARYA_AI_PROVIDER: "openrouter",
+  OPENROUTER_API_KEY: "fixture-key-not-a-credential",
+  OPENROUTER_MODEL: "fixture-org/selected-model",
 };
 const prompt = { system: "Offline test", context: "", recentMessages: [], userMessage: "Hello" };
 let cases = 0;
@@ -30,20 +30,20 @@ async function check(name, run) {
 
 await check("valid selection and startup state", () => {
   const report = getProviderStartupDiagnostics(env);
-  assert.equal(report.provider, "together-ai");
+  assert.equal(report.provider, "openrouter");
   assert.equal(report.state, "configured");
-  assert.equal(report.together.ready, true);
+  assert.equal(report.openrouter.ready, true);
   assert.equal(report.identityVerified, false);
   assert.equal(report.inferenceVerified, false);
-  assert.equal(selectModelProvider({ env }).model, env.TOGETHER_MODEL);
+  assert.equal(selectModelProvider({ env }).model, env.OPENROUTER_MODEL);
 });
 
 await check("presence diagnostics never serialize raw values", () => {
   const canary = "DO-NOT-LOG-fixture-value";
   const raw = {
-    ...env, TOGETHER_API_KEY: canary, TOGETHER_MODEL: canary,
-    TOGETHER_BASE_URL: `https://user:${canary}@example.test/v1?key=${canary}`,
-    TOGETHER_TIMEOUT_MS: canary,
+    ...env, OPENROUTER_API_KEY: canary, OPENROUTER_MODEL: canary,
+    OPENROUTER_BASE_URL: `https://user:${canary}@example.test/v1?key=${canary}`,
+    OPENROUTER_TIMEOUT_MS: canary,
   };
   for (const configuration of [raw, { ...raw, MEDHARYA_AI_PROVIDER: canary }]) {
     const text = JSON.stringify(getProviderStartupDiagnostics(configuration));
@@ -55,51 +55,51 @@ await check("presence diagnostics never serialize raw values", () => {
 });
 
 await check("missing key and model are explicit", () => {
-  const report = getProviderStartupDiagnostics({ MEDHARYA_AI_PROVIDER: "together" });
-  assert.deepEqual(report.together.missing, ["TOGETHER_API_KEY", "TOGETHER_MODEL"]);
+  const report = getProviderStartupDiagnostics({ MEDHARYA_AI_PROVIDER: "openrouter" });
+  assert.deepEqual(report.openrouter.missing, ["OPENROUTER_API_KEY", "OPENROUTER_MODEL"]);
   assert.equal(report.state, "unavailable");
-  assert.equal(selectModelProvider({ env: { MEDHARYA_AI_PROVIDER: "together" } }), null);
+  assert.equal(selectModelProvider({ env: { MEDHARYA_AI_PROVIDER: "openrouter" } }), null);
 });
 
 for (const provider of ["disabled", "none", "off"]) {
   await check(`disabled provider ${provider}`, () => {
     const disabled = { ...env, MEDHARYA_AI_PROVIDER: provider };
-    assert.equal(getProviderStartupDiagnostics(disabled).together.ready, false);
+    assert.equal(getProviderStartupDiagnostics(disabled).openrouter.ready, false);
     assert.equal(selectModelProvider({ env: disabled }), null);
   });
 }
 await check("global disable", () => {
   const disabled = { ...env, MEDHARYA_DISABLE_EXTERNAL_PROVIDERS: "1" };
-  assert.equal(getProviderStartupDiagnostics(disabled).together.selected, false);
+  assert.equal(getProviderStartupDiagnostics(disabled).openrouter.selected, false);
   assert.equal(selectModelProvider({ env: disabled }), null);
 });
 
-await check("explicit generic provider cannot be overridden by Together credentials", () => {
+await check("explicit generic provider cannot be overridden by OpenRouter credentials", () => {
   const generic = { ...env, MEDHARYA_AI_PROVIDER: "openai-compatible", MEDHARYA_AI_API_KEY: "mock", MEDHARYA_AI_MODEL: "generic-model" };
   assert.equal(selectedModelProviderStatus({ env: generic }).provider, "openai-compatible");
   assert.equal(selectModelProvider({ env: generic }).model, "generic-model");
-  assert.equal(getProviderStartupDiagnostics(generic).together.selected, false);
+  assert.equal(getProviderStartupDiagnostics(generic).openrouter.selected, false);
 });
 
-await check("implicit selection requires canonical Together credentials", () => {
-  assert.equal(selectedModelProviderStatus({ env: { ...env, MEDHARYA_AI_PROVIDER: "" } }).provider, "together-ai");
+await check("implicit selection requires canonical OpenRouter credentials", () => {
+  assert.equal(selectedModelProviderStatus({ env: { ...env, MEDHARYA_AI_PROVIDER: "" } }).provider, "openrouter");
   const generic = { MEDHARYA_AI_API_KEY: "mock", MEDHARYA_AI_MODEL: "generic-model" };
-  assert.equal(getProviderStartupDiagnostics(generic).together.selected, false);
+  assert.equal(getProviderStartupDiagnostics(generic).openrouter.selected, false);
 });
 
 await check("canonical model is preserved and blank aliases are handled", () => {
-  assert.equal(selectModelProvider({ env: { ...env, MEDHARYA_TOGETHER_MODEL: "alternate-model" } }).model, env.TOGETHER_MODEL);
-  const aliases = { MEDHARYA_AI_PROVIDER: "together", TOGETHER_API_KEY: " ", TOGETHER_MODEL: " ", MEDHARYA_AI_API_KEY: "mock", MEDHARYA_AI_MODEL: "alias-model" };
-  assert.equal(selectModelProvider({ env: aliases }).model, "alias-model");
+  assert.equal(selectModelProvider({ env: { ...env, OPENROUTER_MODEL: "alternate-model" } }).model, "alternate-model");
+  const aliases = { MEDHARYA_AI_PROVIDER: "openrouter", OPENROUTER_API_KEY: " ", OPENROUTER_MODEL: " " };
+  assert.equal(selectModelProvider({ env: aliases }), null);
 });
 
 for (const baseUrl of ["invalid", "http://remote.example.test/v1", "https://user:password@example.test/v1", "https://example.test/v1?key=mock", "https://example.test/v1#mock"]) {
   await check("invalid URL blocks status, factory, and transport", async () => {
-    const invalid = { ...env, TOGETHER_BASE_URL: baseUrl };
+    const invalid = { ...env, OPENROUTER_BASE_URL: baseUrl };
     assert.equal(selectedModelProviderStatus({ env: invalid }).state, "unavailable");
     assert.equal(selectModelProvider({ env: invalid }), null);
     let calls = 0;
-    const result = await requestTogether({ apiKey: env.TOGETHER_API_KEY, model: env.TOGETHER_MODEL, baseUrl }, prompt, async () => { calls += 1; throw new Error("No transport expected"); });
+    const result = await requestOpenRouter({ apiKey: env.OPENROUTER_API_KEY, model: env.OPENROUTER_MODEL, baseUrl }, prompt, async () => { calls += 1; throw new Error("No transport expected"); });
     assert.equal(calls, 0);
     assert.equal(result.reason, "missing-config");
   });
@@ -107,29 +107,29 @@ for (const baseUrl of ["invalid", "http://remote.example.test/v1", "https://user
 
 for (const timeout of ["NaN", "Infinity", "0", "-1"]) {
   await check("invalid timeout blocks configuration", () => {
-    const invalid = { ...env, TOGETHER_TIMEOUT_MS: timeout };
-    assert.equal(getProviderStartupDiagnostics(invalid).together.timeoutConfigured, false);
+    const invalid = { ...env, OPENROUTER_TIMEOUT_MS: timeout };
+    assert.equal(getProviderStartupDiagnostics(invalid).openrouter.timeoutConfigured, false);
     assert.equal(selectedModelProviderStatus({ env: invalid }).state, "unavailable");
     assert.equal(selectModelProvider({ env: invalid }), null);
   });
 }
 for (const [timeout, expected] of [["", 15000], ["1", 2000], ["15000", 15000], ["90000", 45000]]) {
   await check("timeout bounds", () => {
-    assert.equal(getTogetherConfigurationDiagnostics({ ...env, TOGETHER_TIMEOUT_MS: timeout }).timeoutMs, expected);
+    assert.equal(getOpenRouterConfigurationDiagnostics({ ...env, OPENROUTER_TIMEOUT_MS: timeout }).timeoutMs, expected);
   });
 }
 
-await check("selected Together path executes only the mock and preserves model identity", async () => {
+await check("selected OpenRouter path executes only the mock and preserves model identity", async () => {
   let calls = 0;
   const provider = selectModelProvider({ env, request: async (url, init) => {
     calls += 1;
-    assert.equal(url, "https://api.together.ai/v1/chat/completions");
-    assert.equal(JSON.parse(init.body).model, env.TOGETHER_MODEL);
-    return new Response(JSON.stringify({ model: env.TOGETHER_MODEL, choices: [{ message: { content: "Offline response" } }] }));
+    assert.equal(url, "https://openrouter.ai/api/v1/chat/completions");
+    assert.equal(JSON.parse(init.body).model, env.OPENROUTER_MODEL);
+    return new Response(JSON.stringify({ model: env.OPENROUTER_MODEL, choices: [{ message: { content: "Offline response" } }] }));
   } });
   const result = await provider.complete(prompt);
   assert.equal(result.status, "available");
-  assert.equal(result.provider, "together-ai");
+  assert.equal(result.provider, "openrouter");
   assert.equal(result.identityVerified, true);
   assert.equal(calls, 1);
 });
@@ -157,10 +157,10 @@ function childRun(code, overrides = {}) {
 // repository .env.local is never read, replaced, or created by this check.
 const fixture = await mkdtemp(join(tmpdir(), "medharya-provider-env-"));
 try {
-  await writeFile(join(fixture, ".env"), "MEDHARYA_AI_PROVIDER=together\nTOGETHER_API_KEY=fixture-key\nTOGETHER_MODEL=base-model\n");
-  await writeFile(join(fixture, ".env.development"), "TOGETHER_MODEL=development-model\n");
-  await writeFile(join(fixture, ".env.local"), "TOGETHER_MODEL=local-model\n");
-  await writeFile(join(fixture, ".env.test"), "TOGETHER_MODEL=test-model\n");
+  await writeFile(join(fixture, ".env"), "MEDHARYA_AI_PROVIDER=openrouter\nOPENROUTER_API_KEY=fixture-key\nOPENROUTER_MODEL=base-model\n");
+  await writeFile(join(fixture, ".env.development"), "OPENROUTER_MODEL=development-model\n");
+  await writeFile(join(fixture, ".env.local"), "OPENROUTER_MODEL=local-model\n");
+  await writeFile(join(fixture, ".env.test"), "OPENROUTER_MODEL=test-model\n");
   const loadFixture = `
     import nextEnv from '@next/env';
     import { selectModelProvider, selectedModelProviderStatus } from ${JSON.stringify(configurationUrl)};
@@ -171,14 +171,14 @@ try {
     console.log(JSON.stringify({ model: provider?.model, provider: status.provider, state: status.state }));
   `;
   await check("Next loads root .env.local before .env.development and .env", () => {
-    assert.deepEqual(childRun(loadFixture), { model: "local-model", provider: "together-ai", state: "configured" });
+    assert.deepEqual(childRun(loadFixture), { model: "local-model", provider: "openrouter", state: "configured" });
   });
-  await writeFile(join(fixture, ".env.development.local"), "TOGETHER_MODEL=development-local-model\n");
+  await writeFile(join(fixture, ".env.development.local"), "OPENROUTER_MODEL=development-local-model\n");
   await check("Next environment-specific local file takes priority", () => {
     assert.equal(childRun(loadFixture).model, "development-local-model");
   });
   await check("inherited process environment takes priority over dotenv", () => {
-    assert.equal(childRun(loadFixture, { TOGETHER_MODEL: "inherited-model" }).model, "inherited-model");
+    assert.equal(childRun(loadFixture, { OPENROUTER_MODEL: "inherited-model" }).model, "inherited-model");
   });
   await check("Next test mode skips .env.local", () => {
     assert.equal(childRun(loadFixture, { NODE_ENV: "test" }).model, "test-model");
@@ -202,10 +202,10 @@ await check("instrumentation runtime gates, one-time logging, no network or raw 
     await register();
     assert.equal(lines.length, 0);
     process.env.NODE_ENV = 'development';
-    process.env.MEDHARYA_AI_PROVIDER = 'together';
-    process.env.TOGETHER_API_KEY = 'never-log-fixture-canary';
-    process.env.TOGETHER_MODEL = 'never-log-fixture-canary';
-    process.env.TOGETHER_BASE_URL = 'https://example.test/never-log-fixture-canary';
+    process.env.MEDHARYA_AI_PROVIDER = 'openrouter';
+    process.env.OPENROUTER_API_KEY = 'never-log-fixture-canary';
+    process.env.OPENROUTER_MODEL = 'never-log-fixture-canary';
+    process.env.OPENROUTER_BASE_URL = 'https://example.test/never-log-fixture-canary';
     await Promise.all([register(), register()]);
     await register();
     assert.equal(lines.length, 1);

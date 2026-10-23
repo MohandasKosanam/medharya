@@ -13,7 +13,7 @@ import {
   toMedharyaAlphaProviderStatus,
 } from "./alpha";
 import { getConfiguredOllamaProvider, getOllamaProviderStatus } from "./ollama";
-import { getConfiguredTogetherProvider, getTogetherProviderStatus } from "./together";
+import { getConfiguredOpenRouterProvider, getOpenRouterProviderStatus } from "./openrouter";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -51,6 +51,7 @@ export interface OpenAICompatibleRequestConfig {
   model?: string;
   baseUrl?: string;
   timeoutMs?: number;
+  headers?: Readonly<Record<string, string>>;
 }
 
 export interface OpenAICompatibleProviderOptions extends OpenAICompatibleRequestConfig {
@@ -239,6 +240,7 @@ async function requestOnce(
     const response = await request(endpointFor(baseUrl), {
       method: "POST",
       headers: {
+        ...config.headers,
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
@@ -326,6 +328,7 @@ export function createOpenAICompatibleProvider(options: OpenAICompatibleProvider
           model: options.model,
           baseUrl: options.baseUrl,
           timeoutMs: options.timeoutMs,
+          headers: options.headers,
         },
         prompt,
         request,
@@ -354,13 +357,13 @@ export function selectModelProvider(
   if (requestedProvider === "ollama") {
     return getConfiguredOllamaProvider({ env, request });
   }
-  if (requestedProvider === "together" || requestedProvider === "together-ai") {
-    return getConfiguredTogetherProvider({ env, request });
+  if (requestedProvider === "openrouter" || requestedProvider === "open-router" || requestedProvider === "openrouter-ai") {
+    return getConfiguredOpenRouterProvider({ env, request });
   }
   if (requestedProvider === "disabled" || requestedProvider === "none" || requestedProvider === "off") return null;
 
-  if (!requestedProvider && configuredValue(env.TOGETHER_API_KEY) && configuredValue(env.TOGETHER_MODEL)) {
-    return getConfiguredTogetherProvider({ env, request });
+  if (!requestedProvider && configuredValue(env.OPENROUTER_API_KEY) && configuredValue(env.OPENROUTER_MODEL)) {
+    return getConfiguredOpenRouterProvider({ env, request });
   }
 
   const apiKey = configuredValue(env.MEDHARYA_AI_API_KEY);
@@ -400,8 +403,8 @@ export function selectedModelProviderStatus(
   if (requestedProvider === "ollama") {
     return getOllamaProviderStatus({ env });
   }
-  if (requestedProvider === "together" || requestedProvider === "together-ai") {
-    return getTogetherProviderStatus({ env });
+  if (requestedProvider === "openrouter" || requestedProvider === "open-router" || requestedProvider === "openrouter-ai") {
+    return getOpenRouterProviderStatus({ env });
   }
   if (requestedProvider === "disabled" || requestedProvider === "none" || requestedProvider === "off") {
     return {
@@ -412,8 +415,8 @@ export function selectedModelProviderStatus(
     };
   }
 
-  if (!requestedProvider && configuredValue(env.TOGETHER_API_KEY) && configuredValue(env.TOGETHER_MODEL)) {
-    return getTogetherProviderStatus({ env });
+  if (!requestedProvider && configuredValue(env.OPENROUTER_API_KEY) && configuredValue(env.OPENROUTER_MODEL)) {
+    return getOpenRouterProviderStatus({ env });
   }
 
   const apiKey = configuredValue(env.MEDHARYA_AI_API_KEY);

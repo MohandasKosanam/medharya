@@ -10,19 +10,27 @@ const navigation = [
 
 export function SiteHeader() {
   return (
-    <header className="site-header">
+    <header className="site-header landing-header">
       <div className="page-width header-inner">
-        <Brand />
-        <nav className="header-nav" aria-label="Primary navigation">
-          {navigation.map((item) => (
-            <Link key={item.href} href={item.href}>
-              {item.label}
-            </Link>
-          ))}
-        </nav>
+        <div className="header-brand">
+          <Brand />
+        </div>
+        <div className="header-navigation">
+          <nav className="header-nav" aria-label="Primary navigation">
+            {navigation.map((item) => (
+              <Link key={item.href} href={item.href}>
+                {item.label}
+              </Link>
+            ))}
+          </nav>
+        </div>
         <div className="header-actions">
+          <span className="header-phase" aria-label="Current product phase">
+            <span className="status-dot" aria-hidden="true" />
+            Phase 2
+          </span>
           <Link className="button button-small button-primary" href="#builder">
-            Build my solution
+            Start building
             <span aria-hidden="true">↗</span>
           </Link>
           <details className="mobile-menu">

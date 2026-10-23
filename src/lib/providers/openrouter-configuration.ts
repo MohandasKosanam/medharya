@@ -1,11 +1,11 @@
-export const TOGETHER_DEFAULT_BASE_URL = "https://api.together.ai/v1";
+export const OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MIN_TIMEOUT_MS = 2_000;
 const MAX_TIMEOUT_MS = 45_000;
 
 /** @internal Raw deployment values are for configuration checks, not startup logging. */
-export interface TogetherConfigurationDiagnostics {
+export interface OpenRouterConfigurationDiagnostics {
   selected: boolean;
   disabled: boolean;
   providerRequested: string | null;
@@ -37,8 +37,8 @@ function requestedProvider(env: Readonly<Record<string, string | undefined>>) {
   return configuredValue(env.MEDHARYA_AI_PROVIDER)?.toLowerCase() ?? null;
 }
 
-function isTogetherProvider(provider: string | null) {
-  return provider === "together" || provider === "together-ai";
+function isOpenRouterProvider(provider: string | null) {
+  return provider === "openrouter" || provider === "open-router" || provider === "openrouter-ai";
 }
 
 function validBaseUrl(value: string) {
@@ -64,33 +64,32 @@ function effectiveTimeout(value: unknown) {
 }
 
 /** @internal Contains credentials and deployment values; do not log or expose this result. */
-export function resolveTogetherConfiguration(
+export function resolveOpenRouterConfiguration(
   env: Readonly<Record<string, string | undefined>> = typeof process === "undefined" ? {} : process.env,
 ) {
   const provider = requestedProvider(env);
   const disabled = env.MEDHARYA_DISABLE_EXTERNAL_PROVIDERS === "1"
     || provider === "disabled" || provider === "none" || provider === "off";
-  // Blank entries are absent; the first nonblank canonical/alias value wins unchanged.
-  const apiKey = firstConfiguredValue(env.TOGETHER_API_KEY, env.MEDHARYA_TOGETHER_API_KEY, env.MEDHARYA_AI_API_KEY);
-  const model = firstConfiguredValue(env.TOGETHER_MODEL, env.MEDHARYA_TOGETHER_MODEL, env.MEDHARYA_AI_MODEL);
-  const configuredBaseUrl = firstConfiguredValue(env.TOGETHER_BASE_URL, env.MEDHARYA_TOGETHER_BASE_URL);
-  const baseUrl = configuredBaseUrl ?? TOGETHER_DEFAULT_BASE_URL;
-  const rawTimeout = firstConfiguredValue(env.TOGETHER_TIMEOUT_MS, env.MEDHARYA_TOGETHER_TIMEOUT_MS, env.MEDHARYA_AI_TIMEOUT_MS);
+  const apiKey = firstConfiguredValue(env.OPENROUTER_API_KEY);
+  const model = firstConfiguredValue(env.OPENROUTER_MODEL);
+  const configuredBaseUrl = firstConfiguredValue(env.OPENROUTER_BASE_URL);
+  const baseUrl = configuredBaseUrl ?? OPENROUTER_DEFAULT_BASE_URL;
+  const rawTimeout = firstConfiguredValue(env.OPENROUTER_TIMEOUT_MS);
   const timeoutConfigured = rawTimeout === null || (Number.isFinite(Number(rawTimeout)) && Number(rawTimeout) > 0);
   const apiKeyConfigured = Boolean(apiKey);
   const modelConfigured = Boolean(model);
   const baseUrlValid = validBaseUrl(baseUrl);
-  const explicitlyTogether = isTogetherProvider(provider);
-  const implicitlyTogether = !provider && Boolean(configuredValue(env.TOGETHER_API_KEY) && configuredValue(env.TOGETHER_MODEL));
-  const selected = !disabled && (explicitlyTogether || implicitlyTogether);
+  const explicitlyOpenRouter = isOpenRouterProvider(provider);
+  const implicitlyOpenRouter = !provider && apiKeyConfigured && modelConfigured;
+  const selected = !disabled && (explicitlyOpenRouter || implicitlyOpenRouter);
   const missing: string[] = [];
 
-  if (selected && !apiKeyConfigured) missing.push("TOGETHER_API_KEY");
-  if (selected && !modelConfigured) missing.push("TOGETHER_MODEL");
-  if (selected && !baseUrlValid) missing.push("TOGETHER_BASE_URL");
-  if (selected && !timeoutConfigured) missing.push("TOGETHER_TIMEOUT_MS");
+  if (selected && !apiKeyConfigured) missing.push("OPENROUTER_API_KEY");
+  if (selected && !modelConfigured) missing.push("OPENROUTER_MODEL");
+  if (selected && !baseUrlValid) missing.push("OPENROUTER_BASE_URL");
+  if (selected && !timeoutConfigured) missing.push("OPENROUTER_TIMEOUT_MS");
 
-  const diagnostics: TogetherConfigurationDiagnostics = {
+  const diagnostics: OpenRouterConfigurationDiagnostics = {
     selected,
     disabled,
     providerRequested: provider,
@@ -112,13 +111,18 @@ export function resolveTogetherConfiguration(
       model: model ?? undefined,
       baseUrl,
       timeoutMs: diagnostics.timeoutMs,
+      headers: {
+        ...(configuredValue(env.OPENROUTER_HTTP_REFERER) ? { "HTTP-Referer": configuredValue(env.OPENROUTER_HTTP_REFERER)! } : {}),
+        ...(configuredValue(env.OPENROUTER_APP_TITLE) ? { "X-Title": configuredValue(env.OPENROUTER_APP_TITLE)! } : {}),
+        "X-OpenRouter-Metadata": "enabled",
+      },
     },
     diagnostics,
   };
 }
 
-export function getTogetherConfigurationDiagnostics(
+export function getOpenRouterConfigurationDiagnostics(
   env: Readonly<Record<string, string | undefined>> = typeof process === "undefined" ? {} : process.env,
-): TogetherConfigurationDiagnostics {
-  return resolveTogetherConfiguration(env).diagnostics;
+): OpenRouterConfigurationDiagnostics {
+  return resolveOpenRouterConfiguration(env).diagnostics;
 }

@@ -63,7 +63,7 @@ function evidenceContext(workspace: ProjectWorkspace, branchId?: string) {
     ? new Set(contextBranches.flatMap((branch) => branch.researchFindingIds))
     : null;
   const findingEvidenceIds = new Set(
-    workspace.researchFindings
+    (workspace.researchFindings ?? [])
       .filter((finding) => !allowedFindingIds || allowedFindingIds.has(finding.id))
       .flatMap((finding) => finding.evidenceId ? [finding.evidenceId] : []),
   );
@@ -231,10 +231,20 @@ function providerStatusForResult(result: ModelProviderResult): ModelProviderStat
 }
 
 async function generateReply(workspace: ProjectWorkspace, message: string, branchId?: string): Promise<GeneratedReply> {
+  const deterministic = deterministicReply(workspace, message, branchId);
+  if ([
+    "Hi! How can I help with your project today?",
+    "Hello! How can I help with your project today?",
+    "Hey! How can I help with your project today?",
+    "Good morning! How can I help with your project today?",
+  ].includes(deterministic.content)) {
+    return deterministic;
+  }
+
   const provider = getConfiguredModelProvider();
   if (!provider) {
     return {
-      ...deterministicReply(workspace, message, branchId),
+      ...deterministic,
       notice: "No server-side model provider is configured; this is a deterministic catalogue fallback.",
       providerStatus: selectedModelProviderStatus(),
     };
@@ -296,7 +306,7 @@ async function generateReply(workspace: ProjectWorkspace, message: string, branc
   }
 
   return {
-    ...deterministicReply(workspace, message, branchId),
+    ...deterministic,
     notice: "The configured model provider was unavailable, so Medharya used its deterministic catalogue fallback.",
     providerReason: result.reason,
     providerStatus: providerStatusForResult(result),

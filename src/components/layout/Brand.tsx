@@ -3,11 +3,12 @@ import Link from "next/link";
 type BrandProps = {
   href?: string;
   showTagline?: boolean;
+  className?: string;
 };
 
-export function Brand({ href = "/", showTagline = false }: BrandProps) {
+export function Brand({ href = "/", showTagline = false, className = "" }: BrandProps) {
   return (
-    <Link className="brand" href={href} aria-label="Medharya home">
+    <Link className={`brand${className ? ` ${className}` : ""}`} href={href} aria-label="Medharya home">
       <span className="brand-mark" aria-hidden="true">
         <svg viewBox="0 0 32 32" fill="none">
           <path

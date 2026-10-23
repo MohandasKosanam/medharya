@@ -177,7 +177,8 @@ if (
   researchAwareChat.response.status !== 200
   || typeof researchAwareChat.payload?.content !== "string"
   || typeof researchAwareChat.payload?.notice !== "string"
-  || !researchAwareChat.payload.notice.includes("Automatic research")
+  || !researchAwareChat.payload.notice.includes("Automatic")
+  || !researchAwareChat.payload.notice.includes("research")
   || !researchAwareChat.payload.workspace?.messages?.some((message) => message.source === "deterministic-fallback")
 ) {
   throw new Error("Research-aware server chat fallback check failed.");

@@ -3,6 +3,8 @@ import Link from "next/link";
 import { SolutionBuilder } from "@/components/builder/SolutionBuilder";
 import { SiteFooter } from "@/components/layout/SiteFooter";
 import { SiteHeader } from "@/components/layout/SiteHeader";
+import { Ash, PixelDots } from "@/components/visual/DecorativeEffects";
+import { PlanetaryNetwork } from "@/components/visual/PlanetaryNetwork";
 
 const steps = [
   {
@@ -51,82 +53,74 @@ const valuePropositions = [
 
 export default function Home() {
   return (
-    <div className="app-shell">
+    <div className="app-shell landing-page">
       <SiteHeader />
 
-      <main>
-        <section className="hero-section">
-          <div className="page-width hero-grid">
-            <div className="hero-copy">
-              <p className="eyebrow hero-eyebrow">
-                <span className="eyebrow-pulse" aria-hidden="true" />
-                Solution building, not guesswork
-              </p>
-              <h1>
-                Big ideas deserve a <em>smarter start.</em>
-              </h1>
-              <p className="hero-description">
-                Turn your idea into a practical technology stack, a budget-aware
-                plan, and a step-by-step roadmap. Less guesswork. More building.
-              </p>
-              <div className="hero-actions">
-                <Link className="button button-primary button-large" href="#builder">
-                  Build my solution
+      <main className="landing-main">
+        <section
+          className="hero-section landing-hero"
+          aria-labelledby="landing-hero-title"
+        >
+          <div className="landing-hero-backdrop" aria-hidden="true" />
+          <div className="page-width hero-grid landing-hero-grid">
+            <div className="hero-copy landing-hero-copy">
+              <div className="hero-copy-kicker">
+                <p className="eyebrow hero-eyebrow">
+                  <span className="eyebrow-pulse" aria-hidden="true" />
+                  Your ideas deserve a clearer path
+                </p>
+                <span className="hero-copy-index" aria-hidden="true">01 / 03</span>
+              </div>
+                <h1 id="landing-hero-title">
+                  <span>From idea to</span>
+                  <em>execution.</em>
+                </h1>
+                <p className="hero-description">
+                  Medharya helps you structure your ideas, explore decisions with
+                  AI, and take clear steps towards execution.
+                </p>
+                <div className="hero-actions">
+                  <Link className="button button-primary button-large" href="#builder">
+                  Start building
                   <span aria-hidden="true">↗</span>
-                </Link>
-                <Link className="text-link" href="#how-it-works">
-                  Explore how it works
+                  </Link>
+                  <Link className="text-link" href="#how-it-works">
+                  Learn more
                   <span aria-hidden="true">↓</span>
-                </Link>
-              </div>
-              <div className="hero-note">
-                <span className="hero-note-icon" aria-hidden="true">✦</span>
-                <p>Phase 2 is live: capture your brief, open a workspace, and make decisions with context.</p>
-              </div>
+                  </Link>
+                </div>
+                <div className="hero-note">
+                  <span className="hero-note-icon" aria-hidden="true">✦</span>
+                  <p>
+                  A clearer today. A bigger tomorrow.
+                  </p>
+                </div>
             </div>
 
-            <div className="hero-visual" aria-label="A preview of the Medharya solution-building process">
+            <div
+              className="hero-visual landing-hero-focal"
+              role="img"
+              aria-label="A planetary map showing an idea becoming context, direction, and a project workspace"
+            >
+              <PixelDots className="hero-pixel-dots" />
               <div className="visual-orbit orbit-one" aria-hidden="true" />
               <div className="visual-orbit orbit-two" aria-hidden="true" />
-              <div className="solution-preview-card">
-                <div className="preview-card-topline">
-                  <span className="preview-kicker">Your solution brief</span>
-                  <span className="preview-dots" aria-hidden="true">•••</span>
-                </div>
-                <div className="preview-title-block">
-                  <span className="preview-label">Start with the signal</span>
-                  <strong>Idea → context → direction</strong>
-                </div>
-                <div className="preview-flow" aria-hidden="true">
-                  <div className="flow-node flow-node-active">
-                    <span>01</span>
-                    <small>What you want to make</small>
-                  </div>
-                  <div className="flow-line" />
-                  <div className="flow-node">
-                    <span>02</span>
-                    <small>What it needs to work</small>
-                  </div>
-                  <div className="flow-line" />
-                  <div className="flow-node">
-                    <span>03</span>
-                    <small>What to do next</small>
-                  </div>
-                </div>
-                <div className="preview-footer">
-                  <span className="preview-status"><i aria-hidden="true" />Structured input</span>
-                  <span>Phase 2</span>
-                </div>
+              <PlanetaryNetwork className="hero-network" />
+              <div className="floating-label label-context"><span aria-hidden="true">✦</span> Structure ideas</div>
+              <div className="floating-label label-clarity"><span aria-hidden="true">↗</span> Move to execution</div>
+              <div className="floating-label label-options"><span aria-hidden="true">⌁</span> Explore options</div>
+              <div className="hero-focal-caption">
+                <span className="hero-focal-caption-line" aria-hidden="true" />
+                <span>One brief. A clearer direction.</span>
               </div>
-              <div className="floating-label label-context"><span aria-hidden="true">⌁</span> Context first</div>
-              <div className="floating-label label-clarity"><span aria-hidden="true">✦</span> Built for clarity</div>
+              <Ash className="hero-ash" />
             </div>
           </div>
           <div className="hero-glow hero-glow-one" aria-hidden="true" />
           <div className="hero-glow hero-glow-two" aria-hidden="true" />
         </section>
 
-        <section className="signal-strip" aria-label="Medharya principles">
+        <section className="signal-strip landing-signal-strip" aria-label="Medharya principles">
           <div className="page-width signal-strip-inner">
             <span>For students</span>
             <span className="signal-separator" aria-hidden="true">✦</span>
@@ -138,7 +132,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="how-section" id="how-it-works" aria-labelledby="how-title">
+        <section className="how-section landing-section" id="how-it-works" aria-labelledby="how-title">
           <div className="page-width">
             <div className="section-heading how-heading">
               <div>
@@ -165,7 +159,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="value-section" id="value" aria-labelledby="value-title">
+        <section className="value-section landing-section" id="value" aria-labelledby="value-title">
           <div className="page-width">
             <div className="value-intro">
               <p className="eyebrow">More than a directory</p>

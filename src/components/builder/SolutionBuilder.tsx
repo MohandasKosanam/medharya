@@ -296,23 +296,37 @@ export function SolutionBuilder() {
   }
 
   return (
-    <section className="builder-section" id="builder" aria-labelledby="builder-title">
-      <div className="page-width">
+    <section
+      className="builder-section idea-entry-section"
+      id="builder"
+      aria-labelledby="builder-title"
+    >
+      <div className="page-width idea-entry-shell">
         {showAuthGate ? (
-          <AuthGate
-            onProjectReady={openWorkspace}
-            onContinueLocally={continueLocally}
-          />
-        ) : null}
-        <div className="section-heading builder-heading">
-          <div>
-            <p className="eyebrow">Solution builder</p>
-            <h2 id="builder-title">Let&apos;s shape your idea.</h2>
+          <div className="idea-entry-auth-layer">
+            <AuthGate
+              onProjectReady={openWorkspace}
+              onContinueLocally={continueLocally}
+            />
           </div>
-          <p>
-            Give us the context, constraints, and direction. We&apos;ll turn your
-            answers into a clean brief that is ready for the next step.
-          </p>
+        ) : null}
+
+        <div className="idea-entry-heading">
+          <div className="idea-entry-context-bar" aria-label="Project setup progress">
+            <span className="idea-entry-context-label">Project setup</span>
+            <span className="idea-entry-context-rule" aria-hidden="true" />
+            <span className="idea-entry-context-step">Step 1 of 3 · Brief</span>
+          </div>
+          <div className="section-heading builder-heading">
+            <div>
+              <p className="eyebrow">Solution builder</p>
+              <h2 id="builder-title">Let&apos;s shape your idea.</h2>
+            </div>
+            <p>
+              Give us the context, constraints, and direction. We&apos;ll turn your
+              answers into a clean brief that is ready for the next step.
+            </p>
+          </div>
         </div>
 
         {submittedRequest ? (
@@ -321,17 +335,20 @@ export function SolutionBuilder() {
           </div>
         ) : null}
 
-        <div className="builder-layout">
-          <aside className="builder-aside" aria-label="Builder progress">
-            <div className="builder-aside-card">
-              <p className="aside-kicker">A better starting point</p>
+        <div className="builder-layout idea-entry-layout">
+          <aside className="builder-aside idea-entry-progress-panel" aria-label="Builder progress">
+            <div className="builder-aside-card idea-entry-progress-card">
+              <div className="idea-entry-progress-heading">
+                <p className="aside-kicker">A better starting point</p>
+                <span className="idea-entry-progress-count">01 / 03</span>
+              </div>
               <h3>Bring the messy first draft. Leave with a useful brief.</h3>
               <p>
                 This first version helps you describe the problem before tools
                 and trade-offs enter the conversation.
               </p>
-              <ol className="builder-steps">
-                <li className="is-active">
+              <ol className="builder-steps idea-entry-steps" aria-label="Builder progress">
+                <li className="is-active" aria-current="step">
                   <span>01</span>
                   <div>
                     <strong>Describe the idea</strong>
@@ -354,18 +371,11 @@ export function SolutionBuilder() {
                 </li>
               </ol>
             </div>
-            <div className="privacy-note">
-              <span aria-hidden="true">⌁</span>
-              <p>
-                Your unfinished draft is saved locally in this browser. It is
-                not synced to an account or cloud service.
-              </p>
-            </div>
           </aside>
 
           <form
             ref={formRef}
-            className="builder-form-card"
+            className="builder-form-card idea-entry-form"
             onSubmit={handleSubmit}
             noValidate
           >
@@ -679,6 +689,38 @@ export function SolutionBuilder() {
               </button>
             </div>
           </form>
+
+          <aside className="idea-entry-guidance" aria-label="Contextual guidance">
+            <div className="idea-entry-guidance-card">
+              <p className="aside-kicker">While you write</p>
+              <h3>Start with the outcome, not the tools.</h3>
+              <p>
+                A useful first brief can be rough. Give the idea a few edges and
+                the next decisions become easier to see.
+              </p>
+              <ul className="idea-entry-guidance-list">
+                <li>
+                  <span aria-hidden="true">01</span>
+                  <span>What do you want to build?</span>
+                </li>
+                <li>
+                  <span aria-hidden="true">02</span>
+                  <span>Who is it for?</span>
+                </li>
+                <li>
+                  <span aria-hidden="true">03</span>
+                  <span>What should it help them do?</span>
+                </li>
+              </ul>
+            </div>
+            <div className="privacy-note idea-entry-privacy-note">
+              <span aria-hidden="true">⌁</span>
+              <p>
+                Your unfinished draft is saved locally in this browser. It is
+                not synced to an account or cloud service.
+              </p>
+            </div>
+          </aside>
         </div>
       </div>
     </section>

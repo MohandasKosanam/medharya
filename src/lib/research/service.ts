@@ -3,6 +3,7 @@ import { searchWithBrave } from "./brave";
 import { runBoundedResearch, type ResearchEngineOptions } from "./engine";
 import { sanitizeResearchQuery } from "./intent";
 import { summarizeResearchWithModel } from "./summary";
+import { searchWithTinyFish } from "./tinyfish";
 import type { ResearchClaim, ResearchResponse } from "@/types/research";
 
 /** Add deterministic claims and citations without trusting provider URLs. */
@@ -35,9 +36,18 @@ export function buildEvidenceSummary(response: ResearchResponse): ResearchRespon
 /** Run the same bounded, evidence-first pipeline for buttons and chat. */
 export async function runResearchQuery(query: string, options: ResearchEngineOptions = {}): Promise<ResearchResponse> {
   const safeQuery = sanitizeResearchQuery(query);
+  const requestedProvider = process.env.MEDHARYA_RESEARCH_PROVIDER?.trim().toLowerCase();
+  const useBrave = requestedProvider === "brave" || requestedProvider === "brave-search";
+  const search = useBrave
+    ? searchWithBrave
+    : process.env.TINYFISH_API_KEY?.trim()
+      ? searchWithTinyFish
+      : process.env.BRAVE_SEARCH_API_KEY?.trim()
+        ? searchWithBrave
+        : searchWithTinyFish;
   const researched = await runBoundedResearch(
     safeQuery,
-    (targetQuery, limit, searchOptions) => searchWithBrave(targetQuery, limit, searchOptions),
+    (targetQuery, limit, searchOptions) => search(targetQuery, limit, searchOptions),
     options,
   );
   return summarizeResearchWithModel(safeQuery, buildEvidenceSummary(researched));

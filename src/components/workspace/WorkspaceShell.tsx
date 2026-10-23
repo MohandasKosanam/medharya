@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
-import { Brand } from "@/components/layout/Brand";
 import type { ResearchResponse } from "@/types/research";
 import type { ModelProviderStatus } from "@/lib/providers/types";
 import type { WorkspaceMessage, ProjectWorkspace, WorkspaceRequestPatch } from "@/types/workspace";
@@ -17,7 +16,9 @@ import { WorkspaceBriefEditor } from "./WorkspaceBriefEditor";
 import { WorkspaceChat } from "./WorkspaceChat";
 import { WorkspacePlanPanel } from "./WorkspacePlanPanel";
 import { WorkspaceOperatingSystem } from "./WorkspaceOperatingSystem";
+import { WorkspaceNavigation, type WorkspaceView } from "./WorkspaceNavigation";
 import { WorkspaceAccountStatus } from "./WorkspaceAccountStatus";
+import { PixelDots } from "@/components/visual/DecorativeEffects";
 
 type WorkspaceShellProps = {
   projectId: string;
@@ -61,6 +62,97 @@ function freshestWorkspace(left: ProjectWorkspace, right: ProjectWorkspace) {
 
 type ResearchPayload = Partial<ResearchResponse> & { error?: string; workspace?: unknown };
 
+function workspaceViewTitle(view: WorkspaceView) {
+  switch (view) {
+    case "chat":
+      return "Project chat";
+    case "branches":
+      return "Branches";
+    case "connection":
+      return "Node connection";
+    case "glance":
+    default:
+      return "Quick Glance";
+  }
+}
+
+type WorkspaceSelectionPanelProps = {
+  workspace: ProjectWorkspace;
+  selectedBranchId: string | null;
+  onViewChange: (view: WorkspaceView) => void;
+};
+
+function WorkspaceSelectionPanel({ workspace, selectedBranchId, onViewChange }: WorkspaceSelectionPanelProps) {
+  const operatingSystem = workspace.operatingSystem;
+  const selectedBranch = operatingSystem?.branches.find((branch) => branch.id === selectedBranchId);
+
+  if (!operatingSystem) {
+    return (
+      <aside className="workspace-selection-panel" aria-label="Selected project details">
+        <div className="workspace-selection-heading"><span className="eyebrow">Selected node</span><span className="workspace-selection-state">Unavailable</span></div>
+        <h2>Project context</h2>
+        <p>The operating-system record is not available for this legacy workspace yet.</p>
+      </aside>
+    );
+  }
+
+  const activeEdges = operatingSystem.edges.filter((edge) => edge.status === "active");
+  const activeBranches = operatingSystem.branches.filter((branch) => branch.status === "active");
+
+  if (!selectedBranch) {
+    return (
+      <aside className="workspace-selection-panel workspace-selection-panel-root" aria-label="Selected project details">
+        <div className="workspace-selection-heading"><span className="eyebrow">Selected node</span><span className="workspace-selection-state">Project root</span></div>
+        <h2>{workspace.name}</h2>
+        <p>{workspace.request.idea}</p>
+        <dl className="workspace-selection-facts">
+          <div><dt>Active branches</dt><dd>{activeBranches.length}</dd></div>
+          <div><dt>Connections</dt><dd>{activeEdges.length}</dd></div>
+          <div><dt>Open questions</dt><dd>{operatingSystem.discoveryQuestions.filter((question) => question.status === "open").length}</dd></div>
+          <div><dt>Evidence records</dt><dd>{workspace.researchFindings.length}</dd></div>
+        </dl>
+        <div className="workspace-selection-note"><span aria-hidden="true">✦</span><p>Select a branch in the map to inspect its requirements, work, and relationships.</p></div>
+        <button className="button button-secondary button-small" type="button" onClick={() => onViewChange("branches")}>Open branch map <span aria-hidden="true">↗</span></button>
+      </aside>
+    );
+  }
+
+  const branchTasks = operatingSystem.tasks.filter((task) => task.branchId === selectedBranch.id || selectedBranch.taskIds.includes(task.id));
+  const connectedBranches = activeEdges.flatMap((edge) => {
+    if (edge.fromBranchId !== selectedBranch.id && edge.toBranchId !== selectedBranch.id) return [];
+    const branchId = edge.fromBranchId === selectedBranch.id ? edge.toBranchId : edge.fromBranchId;
+    const branch = operatingSystem.branches.find((candidate) => candidate.id === branchId);
+    return branch ? [{ branch, relationship: edge.relationship }] : [];
+  });
+
+  return (
+    <aside className="workspace-selection-panel workspace-selection-panel-branch" aria-label={`Details for ${selectedBranch.name}`}>
+      <div className="workspace-selection-heading"><span className="eyebrow">Selected branch</span><span className={`workspace-selection-state workspace-selection-state-${selectedBranch.status}`}>{selectedBranch.status}</span></div>
+      <div className="workspace-selection-title-row"><h2>{selectedBranch.name}</h2><span className="workspace-selection-template">{selectedBranch.template.replaceAll("-", " ")}</span></div>
+      <p>{selectedBranch.description}</p>
+      <dl className="workspace-selection-facts">
+        <div><dt>Review</dt><dd>{selectedBranch.approvalStatus}</dd></div>
+        <div><dt>Tasks</dt><dd>{branchTasks.length}</dd></div>
+        <div><dt>Messages</dt><dd>{selectedBranch.messages.length}</dd></div>
+        <div><dt>Requirements</dt><dd>{selectedBranch.requirements.length}</dd></div>
+      </dl>
+      <section className="workspace-selection-section" aria-labelledby="selected-branch-signal-title">
+        <h3 id="selected-branch-signal-title">Branch signal</h3>
+        <ul>
+          <li>{selectedBranch.researchFindingIds.length} linked research record{selectedBranch.researchFindingIds.length === 1 ? "" : "s"}</li>
+          <li>{selectedBranch.decisionIds.length} linked decision{selectedBranch.decisionIds.length === 1 ? "" : "s"}</li>
+          <li>{selectedBranch.taskIds.length} persisted task link{selectedBranch.taskIds.length === 1 ? "" : "s"}</li>
+        </ul>
+      </section>
+      <section className="workspace-selection-section" aria-labelledby="selected-branch-connections-title">
+        <div className="workspace-selection-section-heading"><h3 id="selected-branch-connections-title">Connected nodes</h3><span>{connectedBranches.length}</span></div>
+        {connectedBranches.length ? <ul className="workspace-selection-connections">{connectedBranches.map(({ branch, relationship }) => <li key={`${branch.id}-${relationship}`}><strong>{branch.name}</strong><span>{relationship.replaceAll("-", " ")}</span></li>)}</ul> : <p className="workspace-selection-muted">No explicit relationships yet.</p>}
+      </section>
+      <button className="button button-secondary button-small" type="button" onClick={() => onViewChange("branches")}>Open branch workspace <span aria-hidden="true">↗</span></button>
+    </aside>
+  );
+}
+
 function researchPayloadMessage(payload: ResearchPayload) {
   return typeof payload.message === "string" && payload.message
     ? payload.message
@@ -85,9 +177,11 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
   const [researchMessage, setResearchMessage] = useState<string | null>(null);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<WorkspaceView>("glance");
 
   useEffect(() => {
     let active = true;
+    let requestController: AbortController | null = null;
     const frame = window.requestAnimationFrame(() => {
       void (async () => {
         const savedWorkspace = loadProjectWorkspace(projectId);
@@ -101,7 +195,16 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
         }
 
         try {
-          const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}`);
+          requestController = new AbortController();
+          const timeout = window.setTimeout(() => requestController?.abort(), 2_500);
+          let response: Response;
+          try {
+            response = await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+              signal: requestController.signal,
+            });
+          } finally {
+            window.clearTimeout(timeout);
+          }
           const payload: unknown = await response.json();
           if (!active) return;
           if (response.ok && typeof payload === "object" && payload !== null && "project" in payload && payload.project) {
@@ -132,6 +235,7 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
 
     return () => {
       active = false;
+      requestController?.abort();
       window.cancelAnimationFrame(frame);
     };
   }, [projectId]);
@@ -489,49 +593,129 @@ export function WorkspaceShell({ projectId }: WorkspaceShellProps) {
     return <main className="workspace-page workspace-centered-state"><div className="workspace-state-card"><span className="eyebrow">Project not found</span><h1>This workspace is not available in this browser.</h1><p>The project may have been cleared, or this link may have been opened on another device. Start a new brief to create a local workspace.</p><Link className="button button-primary" href="/#builder">Create a new project <span aria-hidden="true">↗</span></Link></div></main>;
   }
 
+  const operatingSystem = workspace.operatingSystem;
+  const activeBranches = operatingSystem?.branches.filter((branch) => branch.status === "active") ?? [];
+  const activeRelationships = operatingSystem?.edges.filter((edge) => edge.status === "active") ?? [];
+  const openQuestions = operatingSystem?.discoveryQuestions.filter((question) => question.status === "open") ?? [];
+  const recentMessages = workspace.messages.slice(-3).reverse();
+  const selectedBranch = operatingSystem?.branches.find((branch) => branch.id === selectedBranchId);
+
+  function handleSelectedBranchChange(branchId: string) {
+    setSelectedBranchId(branchId || null);
+  }
+
   return (
-    <div className="workspace-page">
-      <header className="workspace-header">
-        <div className="page-width workspace-header-inner">
-          <Brand href="/" />
-          <div className="workspace-header-project"><span>Project workspace</span><strong>{workspace.name}</strong></div>
-          <WorkspaceAccountStatus />
-          <Link className="workspace-back-link" href="/">Back to Medharya <span aria-hidden="true">↗</span></Link>
-        </div>
-      </header>
+    <div className="workspace-page workspace-app-shell">
+      <WorkspaceNavigation
+        workspace={workspace}
+        activeView={activeView}
+        onViewChange={setActiveView}
+        selectedBranchId={selectedBranchId}
+        serverBacked={serverBacked}
+      />
 
-      <main className="page-width workspace-main">
-        <section className="workspace-hero" aria-labelledby="workspace-title">
-          <div>
-            <p className="eyebrow"><span className="eyebrow-pulse" aria-hidden="true" /> Context-aware project workspace</p>
-            <h1 id="workspace-title">{workspace.name}</h1>
-            <p className="workspace-hero-summary">{workspace.request.idea}</p>
+      <div className="workspace-app-main">
+        <header className="workspace-header workspace-topbar">
+          <PixelDots className="workspace-pixel-dots" />
+          <div className="page-width workspace-topbar-inner">
+            <div className="workspace-topbar-breadcrumbs" aria-label="Workspace location">
+              <Link href="/">Projects</Link>
+              <span aria-hidden="true">›</span>
+              <span>{workspace.name}</span>
+              <strong>{workspaceViewTitle(activeView)}</strong>
+            </div>
+            <div className="workspace-topbar-actions">
+              <span className="workspace-topbar-state"><i aria-hidden="true" /> {serverBacked ? "Server sync active" : "Saved locally"}</span>
+              <span className="workspace-topbar-account"><WorkspaceAccountStatus /></span>
+              <Link className="workspace-back-link" href="/">Back to Medharya <span aria-hidden="true">↗</span></Link>
+            </div>
           </div>
-          <div className="workspace-hero-meta"><span>Created {new Date(workspace.createdAt).toLocaleDateString()}</span><span>Updated {new Date(workspace.updatedAt).toLocaleDateString()}</span><span className="local-badge"><i aria-hidden="true" /> {serverBacked ? "Server-owned + browser cache" : "Saved in this browser"}</span></div>
-        </section>
+        </header>
 
-        <WorkspaceBriefEditor key={workspace.updatedAt} request={workspace.request} onSave={saveBriefChanges} />
+        <main className="page-width workspace-main workspace-main-redesign">
+          <section className="workspace-context-header" aria-labelledby="workspace-title">
+            <div className="workspace-context-heading">
+              <p className="eyebrow"><span className="eyebrow-pulse" aria-hidden="true" /> Project workspace · {workspace.request.category}</p>
+              <h1 id="workspace-title">{workspace.name}</h1>
+              <p className="workspace-context-summary">{workspace.request.idea}</p>
+            </div>
+            <div className="workspace-context-meta">
+              <div><span>Created</span><strong>{new Date(workspace.createdAt).toLocaleDateString()}</strong></div>
+              <div><span>Updated</span><strong>{new Date(workspace.updatedAt).toLocaleDateString()}</strong></div>
+              <span className="local-badge"><i aria-hidden="true" /> {serverBacked ? "Server-owned + browser cache" : "Saved in this browser"}</span>
+            </div>
+          </section>
 
-        {persistenceError ? <p className="workspace-inline-error workspace-persistence-alert" role="alert">{persistenceError}</p> : null}
-        {syncNotice ? <p className="workspace-inline-note workspace-sync-note" role="status">{syncNotice}</p> : null}
+          <WorkspaceBriefEditor key={workspace.updatedAt} request={workspace.request} onSave={saveBriefChanges} />
 
-        <div className="workspace-grid">
-          <div className="workspace-primary-column">
-            <WorkspaceChat messages={workspace.messages} isSending={isSending} error={chatError} notice={chatNotice} providerStatus={serverBacked && providerStatus?.projectId === projectId ? providerStatus.status : null} onSend={sendMessage} onRetry={retryState ? retryServerResponse : undefined} />
-            <section className="workspace-memory-panel" aria-labelledby="memory-title">
-              <div className="workspace-panel-heading"><div><p className="eyebrow">Structured memory</p><h2 id="memory-title">What this project currently knows.</h2></div><span className="memory-version">Plan v{workspace.memory.currentPlanVersion}</span></div>
-              <div className="memory-grid">
-                <div><h3>Confirmed requirements</h3>{workspace.memory.confirmedRequirements.length ? <ul>{workspace.memory.confirmedRequirements.slice(-6).map((item) => <li key={item}>{item}</li>)}</ul> : <p>Nothing explicitly confirmed yet.</p>}</div>
-                <div><h3>Open questions</h3>{workspace.memory.openQuestions.length ? <ul>{workspace.memory.openQuestions.map((item) => <li key={item}>{item}</li>)}</ul> : <p>No open questions generated.</p>}</div>
-                <div><h3>Confirmed decisions</h3>{workspace.memory.technologyDecisions.length ? <ul>{workspace.memory.technologyDecisions.map((item) => <li key={item}>{item}</li>)}</ul> : <p>No technology decisions have been confirmed yet.</p>}</div>
-                <div><h3>Recent summary</h3><p>{workspace.memory.recentSummary}</p></div>
-              </div>
-            </section>
-            <WorkspaceOperatingSystem projectId={projectId} serverBacked={serverBacked} workspace={workspace} onChange={persistOperatingSystem} onSelectedBranchChange={setSelectedBranchId} />
+          {persistenceError ? <p className="workspace-inline-error workspace-persistence-alert" role="alert">{persistenceError}</p> : null}
+          {syncNotice ? <p className="workspace-inline-note workspace-sync-note" role="status">{syncNotice}</p> : null}
+
+          <div className="workspace-workbench">
+            <div className="workspace-view-stack">
+              <section className="workspace-view workspace-view-quick-glance" hidden={activeView !== "glance"} aria-labelledby="quick-glance-title">
+                <div className="workspace-view-heading">
+                  <div><p className="eyebrow">Quick Glance</p><h2 id="quick-glance-title">Everything currently known about this project.</h2><p>Review the shared context before moving into chat, branch work, or node connections.</p></div>
+                  <span className="workspace-view-badge">Plan v{workspace.plan.version}</span>
+                </div>
+                <div className="workspace-glance-metrics" aria-label="Project summary">
+                  <article><span>Messages</span><strong>{workspace.messages.length}</strong><small>Shared project conversation</small></article>
+                  <article><span>Active branches</span><strong>{activeBranches.length}</strong><small>Reviewable project directions</small></article>
+                  <article><span>Open questions</span><strong>{openQuestions.length}</strong><small>Discovery still in progress</small></article>
+                  <article><span>Evidence</span><strong>{workspace.researchFindings.length}</strong><small>Source-backed findings attached</small></article>
+                </div>
+                <div className="workspace-glance-layout">
+                  <div className="workspace-glance-primary">
+                    <section className="workspace-memory-panel" aria-labelledby="memory-title">
+                      <div className="workspace-panel-heading"><div><p className="eyebrow">Structured memory</p><h2 id="memory-title">What this project currently knows.</h2></div><span className="memory-version">Plan v{workspace.memory.currentPlanVersion}</span></div>
+                      <div className="memory-grid">
+                        <div><h3>Confirmed requirements</h3>{workspace.memory.confirmedRequirements.length ? <ul>{workspace.memory.confirmedRequirements.slice(-6).map((item) => <li key={item}>{item}</li>)}</ul> : <p>Nothing explicitly confirmed yet.</p>}</div>
+                        <div><h3>Open questions</h3>{workspace.memory.openQuestions.length ? <ul>{workspace.memory.openQuestions.map((item) => <li key={item}>{item}</li>)}</ul> : <p>No open questions generated.</p>}</div>
+                        <div><h3>Confirmed decisions</h3>{workspace.memory.technologyDecisions.length ? <ul>{workspace.memory.technologyDecisions.map((item) => <li key={item}>{item}</li>)}</ul> : <p>No technology decisions have been confirmed yet.</p>}</div>
+                        <div><h3>Recent summary</h3><p>{workspace.memory.recentSummary}</p></div>
+                      </div>
+                    </section>
+                    <section className="workspace-activity-card" aria-labelledby="activity-title">
+                      <div className="workspace-panel-heading"><div><p className="eyebrow">Recent activity</p><h2 id="activity-title">The latest project signals.</h2></div><span className="memory-version">{workspace.messages.length} total</span></div>
+                      <div className="workspace-activity-list">
+                        {recentMessages.length ? recentMessages.map((message) => <article className="workspace-activity-item" key={message.id}><div><span>{message.role === "user" ? "You" : "Medharya"}</span><time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString()}</time></div><p>{message.content}</p></article>) : <p className="workspace-selection-muted">No conversation activity yet.</p>}
+                      </div>
+                    </section>
+                  </div>
+                  <WorkspacePlanPanel workspace={workspace} researchState={researchState} researchMessage={researchMessage} onResearch={researchDirection} />
+                </div>
+              </section>
+
+              <section className="workspace-view workspace-view-chat" hidden={activeView !== "chat"} aria-labelledby="chat-view-title">
+                <div className="workspace-view-heading">
+                  <div><p className="eyebrow">Chat</p><h2 id="chat-view-title">Think it through with Medharya.</h2><p>The shared project conversation keeps the full brief, plan, and evidence in view.</p></div>
+                  <span className="workspace-view-badge">{workspace.messages.length} messages</span>
+                </div>
+                <div className="workspace-chat-context-strip"><span>Current brief</span><p>{workspace.request.idea}</p><span className="workspace-chat-context-plan">Plan v{workspace.plan.version} · {workspace.plan.provenance}</span></div>
+                <WorkspaceChat messages={workspace.messages} isSending={isSending} error={chatError} notice={chatNotice} providerStatus={serverBacked && providerStatus?.projectId === projectId ? providerStatus.status : null} onSend={sendMessage} onRetry={retryState ? retryServerResponse : undefined} />
+              </section>
+
+              <section className={`workspace-view workspace-view-operating-system workspace-view-${activeView}`} hidden={activeView !== "branches" && activeView !== "connection"} aria-labelledby="operating-system-view-title">
+                <div className="workspace-view-heading">
+                  <div><p className="eyebrow">{activeView === "connection" ? "Node Connection" : "Branches"}</p><h2 id="operating-system-view-title">{activeView === "connection" ? "See how project ideas depend on one another." : "Turn project context into reviewable work."}</h2><p>{activeView === "connection" ? "Use explicit relationships to inspect dependencies, blockers, and supporting ideas." : "Keep branch conversations, discovery, tasks, and manual automation in one operating system."}</p></div>
+                  <span className="workspace-view-badge">{activeRelationships.length} connections</span>
+                </div>
+                <WorkspaceOperatingSystem projectId={projectId} serverBacked={serverBacked} workspace={workspace} onChange={persistOperatingSystem} onSelectedBranchChange={handleSelectedBranchChange} presentation={activeView === "connection" ? "connection" : "branches"} />
+              </section>
+            </div>
+
+            <div className="workspace-context-rail">
+              <WorkspaceSelectionPanel workspace={workspace} selectedBranchId={selectedBranchId} onViewChange={setActiveView} />
+              <section className="workspace-context-rail-card" aria-label="Current workspace view">
+                <span className="eyebrow">Current view</span>
+                <strong>{workspaceViewTitle(activeView)}</strong>
+                <p>{selectedBranch ? `Inspecting ${selectedBranch.name}.` : "Showing the shared project context."}</p>
+                <div className="workspace-context-rail-links"><button type="button" onClick={() => setActiveView("chat")}>Open chat <span aria-hidden="true">↗</span></button><button type="button" onClick={() => setActiveView("connection")}>Open connections <span aria-hidden="true">↗</span></button></div>
+              </section>
+            </div>
           </div>
-          <WorkspacePlanPanel workspace={workspace} researchState={researchState} researchMessage={researchMessage} onResearch={researchDirection} />
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }

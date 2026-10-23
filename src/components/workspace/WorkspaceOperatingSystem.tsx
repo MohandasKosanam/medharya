@@ -36,6 +36,7 @@ type WorkspaceOperatingSystemProps = {
   projectId?: string;
   serverBacked?: boolean;
   onSelectedBranchChange?: (branchId: string) => void;
+  presentation?: "branches" | "connection";
 };
 
 type CanvasPoint = { x: number; y: number };
@@ -51,8 +52,8 @@ type PersistedProjectOperatingSystem = ProjectOperatingSystem & { viewport?: Can
 
 type RelationshipFilter = "selected" | "all";
 
-const CANVAS_WIDTH = 1_120;
-const CANVAS_HEIGHT = 680;
+const CANVAS_WIDTH = 1_360;
+const CANVAS_HEIGHT = 720;
 const NODE_WIDTH = 210;
 const NODE_HEIGHT = 82;
 const ROOT_WIDTH = 250;
@@ -169,8 +170,8 @@ function defaultPositions(branches: ProjectBranch[]) {
   const topLevelBranches = branches.filter((branch) => !branch.parentBranchId);
 
   topLevelBranches.forEach((branch, index) => {
-    const column = index % 3;
-    const row = Math.floor(index / 3);
+    const column = index % 4;
+    const row = Math.floor(index / 4);
     positions[branch.id] = positionWithinCanvas({
       x: 34 + column * 316,
       y: 148 + row * 130,
@@ -271,6 +272,7 @@ export function WorkspaceOperatingSystem({
   projectId = "",
   serverBacked = false,
   onSelectedBranchChange,
+  presentation = "branches",
 }: WorkspaceOperatingSystemProps) {
   const operatingSystem = workspace.operatingSystem as PersistedProjectOperatingSystem;
   const branches = operatingSystem.branches as PersistedProjectBranch[];
@@ -1110,11 +1112,15 @@ export function WorkspaceOperatingSystem({
     : [];
 
   return (
-    <section className="workspace-os-panel" aria-labelledby="operating-system-title">
+    <section
+      className={`workspace-os-panel workspace-os-panel-${presentation}`}
+      data-presentation={presentation}
+      aria-labelledby="operating-system-title"
+    >
       <div className="workspace-panel-heading">
         <div>
-          <p className="eyebrow">Idea operating system</p>
-          <h2 id="operating-system-title">Branches, decisions, and execution.</h2>
+          <p className="eyebrow">{presentation === "connection" ? "Node connection" : "Idea operating system"}</p>
+          <h2 id="operating-system-title">{presentation === "connection" ? "Connect the ideas that move this project forward." : "Branches, decisions, and execution."}</h2>
         </div>
         <span className="memory-version">Local record · reviewable</span>
       </div>
@@ -1128,7 +1134,7 @@ export function WorkspaceOperatingSystem({
 
       <div className="os-grid">
         <section className="os-canvas-section" aria-labelledby="branch-map-title">
-          <div className="os-section-heading"><div><h3 id="branch-map-title">Idea map</h3><p>Drag nodes to arrange the view, use the controls to zoom, and connect branches directly in the map.</p></div><span>{branches.filter((branch) => branch.status === "active").length} active branches</span></div>
+          <div className="os-section-heading"><div><h3 id="branch-map-title">{presentation === "connection" ? "Node connection map" : "Idea map"}</h3><p>{presentation === "connection" ? "Review explicit dependencies and relationships, then connect nodes directly in the map." : "Drag nodes to arrange the view, use the controls to zoom, and connect branches directly in the map."}</p></div><span>{branches.filter((branch) => branch.status === "active").length} active branches</span></div>
           <nav className="branch-breadcrumbs" aria-label="Branch location">
             <button type="button" className={!selectedBranch ? "is-current" : ""} onClick={selectProjectRoot} aria-current={!selectedBranch ? "page" : undefined}>Project</button>
             {breadcrumbBranches.map((branch, index) => (
@@ -1157,7 +1163,7 @@ export function WorkspaceOperatingSystem({
                   <path d="M 0 0 L 7 3.5 L 0 7 z" fill="currentColor" />
                 </marker>
                 <marker id="branch-arrow-related" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="strokeWidth">
-                  <path d="M 0 0 L 7 3.5 L 0 7 z" fill="#8b7bff" />
+                  <path d="M 0 0 L 7 3.5 L 0 7 z" fill="#ff5148" />
                 </marker>
               </defs>
               <rect className="branch-canvas-hit-area" x="0" y="0" width={CANVAS_WIDTH} height={CANVAS_HEIGHT} />
@@ -1251,13 +1257,13 @@ export function WorkspaceOperatingSystem({
           </div>
         </section>
 
-        <section className="os-discovery-section" aria-labelledby="discovery-title">
+        <section className="os-discovery-section" aria-labelledby="discovery-title" hidden={presentation === "connection"}>
           <div className="os-section-heading"><div><h3 id="discovery-title">Progressive discovery</h3><p>One question at a time; supplied brief fields are skipped.</p></div><span>{operatingSystem.discoveryAnswers.length} answers</span></div>
           {firstQuestion ? <form className="discovery-question-card" onSubmit={answerDiscovery}><span className="discovery-question-number">Next question</span><strong>{firstQuestion.prompt}</strong><p>{firstQuestion.rationale}</p><textarea value={discoveryDraft} rows={3} maxLength={1000} placeholder="Answer, or leave it until you are ready…" onChange={(event) => setDiscoveryDraft(event.target.value)} /><div><button className="button button-primary button-small" type="submit" disabled={!discoveryDraft.trim()}>Record answer</button><button className="button button-ghost button-small" type="button" onClick={skipDiscovery}>Skip for now</button></div></form> : <p className="os-empty-state">The current discovery questions are answered or skipped. You can revisit them after changing the brief.</p>}
         </section>
       </div>
 
-      <section className="os-branch-chat" aria-labelledby="branch-chat-title">
+      <section className="os-branch-chat" aria-labelledby="branch-chat-title" hidden={presentation === "connection"}>
         <div className="os-section-heading"><div><h3 id="branch-chat-title">{selectedBranch?.name ?? "Branch"} conversation</h3><p>Branch chat keeps its own messages while inheriting the shared project idea. It never appears in the main project conversation.</p></div><span>{selectedBranch?.approvalStatus ?? "pending"} review</span></div>
         {branchChatNotice ? <p className="branch-chat-notice" role="status">{branchChatNotice}</p> : null}
         {branchChatError ? <p className="workspace-inline-error branch-chat-error" role="alert">{branchChatError}</p> : null}
@@ -1267,13 +1273,13 @@ export function WorkspaceOperatingSystem({
         <form className="branch-chat-composer" onSubmit={sendBranchMessage}><label className="sr-only" htmlFor="branch-message">Message this branch</label><textarea id="branch-message" rows={2} value={branchMessageDraft} maxLength={2000} placeholder="Ask a question specific to this branch…" onChange={(event) => setBranchMessageDraft(event.target.value)} disabled={branchChatSending} /><button className="button button-secondary button-small" type="submit" disabled={branchChatSending || !branchMessageDraft.trim()}>{branchChatSending ? "Checking branch…" : "Send to branch"} {!branchChatSending ? <span aria-hidden="true">↗</span> : null}</button></form>
       </section>
 
-      <section className="os-execution-section" aria-labelledby="execution-title">
+      <section className="os-execution-section" aria-labelledby="execution-title" hidden={presentation === "connection"}>
         <div className="os-section-heading"><div><h3 id="execution-title">Execution command center</h3><p>Generated work starts as drafts. Status changes are real records, not assistant claims.</p></div><button className="button button-secondary button-small" type="button" onClick={generateTasks}>Draft tasks from plan</button></div>
         <div className="task-toolbar"><label htmlFor="task-filter">Show <select id="task-filter" value={taskFilter} onChange={(event) => setTaskFilter(event.target.value as typeof taskFilter)}><option value="all">all</option><option value="draft">draft</option><option value="in-progress">in progress</option><option value="blocked">blocked</option><option value="done">done</option></select></label><span>{operatingSystem.tasks.filter((task) => task.status === "done").length}/{operatingSystem.tasks.length} done</span></div>
         <div className="task-list">{visibleTasks.length ? visibleTasks.map((task) => <article className="task-card" key={task.id}><div><span className={`task-status task-status-${task.status}`}>{task.status}</span><h4>{task.title}</h4><p>{task.description}</p><small>{task.approvalStatus} approval · {task.acceptanceCriteria[0]}</small></div><select aria-label={`Update ${task.title} status`} value={task.status} onChange={(event) => setTaskStatus(task.id, event.target.value as typeof task.status)}><option value="draft">Draft</option><option value="ready">Ready</option><option value="in-progress">In progress</option><option value="blocked">Blocked</option><option value="done">Done</option><option value="cancelled">Cancelled</option></select></article>) : <p className="os-empty-state">No tasks match this filter.</p>}</div>
       </section>
 
-      <section className="os-automation-section" aria-labelledby="automation-title">
+      <section className="os-automation-section" aria-labelledby="automation-title" hidden={presentation === "connection"}>
         <div className="os-section-heading"><div><h3 id="automation-title">Automation studio</h3><p>Only manual dry runs are enabled in this prototype; no scheduler is implied.</p></div><span>{operatingSystem.automationRuns.length} runs</span></div>
         <div className="automation-list">{operatingSystem.automations.map((automation) => <article className="automation-card" key={automation.id}><div><strong>{automation.name}</strong><p>{automation.description}</p><small>Manual-only · approval required for side effects</small></div><button className="button button-secondary button-small" type="button" onClick={() => runAutomation(automation.id)} disabled={automation.status !== "available"}>Run dry check</button></article>)}</div>
         {operatingSystem.automationRuns.length ? <p className="automation-run-note" role="status">Last run: {operatingSystem.automationRuns[operatingSystem.automationRuns.length - 1].summary}</p> : null}

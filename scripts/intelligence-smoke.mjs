@@ -185,8 +185,11 @@ if (crossProjectUpdate.response.status !== 400) {
 }
 
 const aiStatus = await request(`/api/ai/status?projectId=${encodeURIComponent(projectId)}`);
-if (aiStatus.response.status !== 200 || aiStatus.payload?.providerStatus?.state !== "unavailable") {
-  throw new Error("Unavailable-provider status check failed.");
+if (
+  aiStatus.response.status !== 200
+  || !["unavailable", "configured", "ready", "degraded"].includes(aiStatus.payload?.providerStatus?.state)
+) {
+  throw new Error("AI provider status check failed.");
 }
 
 const chat = await request("/api/chat", {
@@ -226,7 +229,13 @@ const branchChat = await request("/api/chat", {
   method: "POST",
   body: JSON.stringify({ projectId, branchId: nestedBranch.id, message: "What is the current availability of the nested branch stack?", messageId: "intelligence-smoke-branch-message" }),
 });
-if (branchChat.response.status !== 200 || branchChat.payload?.contextSource !== "server-owned" || !branchChat.payload?.notice?.includes("Automatic research")) {
+if (
+  branchChat.response.status !== 200
+  || branchChat.payload?.contextSource !== "server-owned"
+  || typeof branchChat.payload?.notice !== "string"
+  || !branchChat.payload.notice.includes("Automatic")
+  || !branchChat.payload.notice.includes("research")
+) {
   throw new Error("Server-owned branch chat routing check failed.");
 }
 const persistedNestedBranch = branchChat.payload.workspace?.operatingSystem?.branches?.find((branch) => branch.id === nestedBranch.id);

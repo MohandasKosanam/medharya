@@ -31,13 +31,20 @@ ran.
   pricing metadata.
 - Deterministic recommendation and roadmap engine that reacts to category,
   budget, experience, deployment, preferences, and requirements.
-- Optional OpenAI-compatible server-side provider adapter with bounded prompts,
-  normalized output, usage metadata, transient retries, and secret-safe errors.
+- OpenRouter server-side provider adapter using the documented OpenAI-compatible
+  chat-completions API, with bounded prompts, normalized output, usage metadata,
+  transient retries, and secret-safe errors.
+- Optional generic OpenAI-compatible and local Ollama provider adapters remain
+  available for explicitly selected deployments.
 - Dedicated Medharya Alpha FastAPI provider path with server-side authentication,
   HTTPS enforcement, request IDs, health/status checks, concurrency limits, and
   model/adapter identity attestation when the service returns it.
-- Optional Brave Search server-side research adapter with bounded public-page
-  retrieval, redirect checks, content-type/size/time limits, and SSRF defenses.
+- TinyFish Search + Fetch server-side research adapter with bounded result/page
+  budgets, source provenance, explicit incomplete-result handling, and no
+  client-side credential exposure.
+- Optional Brave Search server-side research adapter remains available when
+  explicitly selected, with bounded public-page retrieval, redirect checks,
+  content-type/size/time limits, and SSRF defenses.
 - Evidence records link search snippets or retrieved page text to source IDs;
   claims and citations can only reference evidence captured by the server.
 - Server-owned chat/research loads and persists the authenticated project rather
@@ -211,6 +218,17 @@ npm run test:provider
 This starts a temporary local production server and never contacts a real AI
 provider or prints a credential.
 
+The OpenRouter and TinyFish protocol adapters also have an offline contract check:
+
+```bash
+npm run test:provider-adapters
+```
+
+It mocks OpenRouter's `/api/v1/chat/completions` response and TinyFish's Search and
+Fetch endpoints, verifies bounded retry and server-side authentication headers,
+and checks that source/page evidence retains provider provenance. It never
+contacts either external service.
+
 The Alpha path can be exercised against a local mocked FastAPI service with:
 
 ```bash
@@ -264,22 +282,24 @@ provider, validates the result, persists the conversation, and returns the
 existing frontend response shape. This repository does not contain a separate
 Express entry point; the App Router handlers are the current Node.js backend.
 
-Set `MEDHARYA_AI_PROVIDER=together` to select Together AI. The adapter uses
-Together's documented OpenAI-compatible endpoint and requires a server-side
-API key and an explicit namespaced Together model ID:
+Set `MEDHARYA_AI_PROVIDER=openrouter` to select OpenRouter. The adapter uses
+OpenRouter's documented OpenAI-compatible endpoint and requires a server-side
+API key and an explicit OpenRouter model ID:
 
 ```dotenv
-MEDHARYA_AI_PROVIDER=together
-TOGETHER_API_KEY=replace-me
-TOGETHER_MODEL=provider/model-name
-TOGETHER_BASE_URL=https://api.together.ai/v1
-TOGETHER_TIMEOUT_MS=15000
+MEDHARYA_AI_PROVIDER=openrouter
+OPENROUTER_API_KEY=replace-me
+OPENROUTER_MODEL=provider/model-name
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_TIMEOUT_MS=15000
+OPENROUTER_HTTP_REFERER=https://your-medharya-host.example
+OPENROUTER_APP_TITLE=Medharya
 ```
 
-`TOGETHER_MODEL` is intentionally required; Medharya does not guess a model
-name or silently substitute a different provider. Together failures preserve
+`OPENROUTER_MODEL` is intentionally required; Medharya does not guess a model
+name or silently substitute a different provider. OpenRouter failures preserve
 the deterministic fallback and are reported through the existing provider
-status contract. The browser calls only `/api/chat`; Together credentials are
+status contract. The browser calls only `/api/chat`; OpenRouter credentials are
 read on the server and never stored in the workspace.
 
 For local development, put these values in the repository-root `.env.local`
@@ -300,16 +320,16 @@ authentication or inference; `inferenceVerified` remains false at startup.
 
 Missing credentials or model IDs, invalid timeouts, URL credentials/query strings,
 and non-loopback HTTP endpoints fail closed without sending an inference request.
-HTTPS is required except for loopback mocked endpoints. Explicit provider selection
-is respected even when Together variables are also present. Canonical Together
-variables take precedence over legacy `MEDHARYA_TOGETHER_*`, then supported
-generic `MEDHARYA_AI_*` aliases; blank entries are treated as absent by the adapter.
+HTTPS is required except for loopback mocked endpoints. Explicit OpenRouter
+selection is respected and does not fall back to generic provider credentials.
+OpenRouter model IDs are passed through unchanged, including routing suffixes such
+as `:free`.
 
-The Together model ID is not guessed or replaced. When credentials are
-available, verify the exact selected ID against Together's current `/v1/models`
-catalogue before inference; an unavailable model is reported as an error rather
-than silently substituted. Catalogue validation is a separate verification step,
-not a startup network request. A catalogue listing alone does not prove inference.
+The OpenRouter model ID is not guessed or replaced. The provider status route can
+verify the exact selected ID through OpenRouter's model endpoint; a missing or
+unavailable model is reported as an error rather than silently substituted.
+Catalogue validation is separate from startup diagnostics, which never make
+network requests. A catalogue listing alone does not prove inference.
 
 `npm run test:provider-config` uses synthetic credentials and isolated temporary
 dotenv files to check Next.js loading/precedence, provider selection, validation,
@@ -564,19 +584,34 @@ unavailable when they stop responding.
 
 ### Live research provider
 
-Live search is implemented through the Brave Search API adapter:
+TinyFish Search is the primary live research adapter. It uses TinyFish Search
+to discover current sources and TinyFish Fetch to extract bounded page text from
+the selected public URLs:
 
 ```dotenv
+MEDHARYA_RESEARCH_PROVIDER=tinyfish
+TINYFISH_API_KEY=replace-me
+```
+
+The server sends only the research query and selected public result URLs to
+TinyFish. Search results retain title, snippet, URL, and retrieval timestamps;
+page text is stored as separate `retrieved-page` evidence. TinyFish failures,
+timeouts, per-URL extraction errors, and empty results remain explicit and never
+become fabricated citations. `/api/chat` invokes this path only when the
+existing research-intent detector marks the message as needing current web
+information.
+
+To keep using the existing Brave adapter explicitly:
+
+```dotenv
+MEDHARYA_RESEARCH_PROVIDER=brave
 BRAVE_SEARCH_API_KEY=replace-me
 ```
 
-Without this key, `/api/research` returns an explicit unavailable response and
-the workspace adds no citations. With it, the server stores bounded search
-results as `search-snippet` evidence and attempts safe retrieval of up to three
-public HTML/text pages. Retrieved page evidence is marked separately from a
-snippet; failed or unsafe page retrieval never becomes a citation. Source-backed
-claims remain unverified until a person reviews the source. Research responses
-also preserve bounded source-quality/freshness classifications, report missing
+Without the selected provider key, `/api/research` returns an explicit
+unavailable response and the workspace adds no citations. Source-backed claims
+remain unverified until a person reviews the source. Research responses also
+preserve bounded source-quality/freshness classifications, report missing
 evidence such as undated or snippet-only results, and flag potentially
 conflicting evidence for review rather than silently choosing a side.
 

@@ -25,10 +25,9 @@ export async function GET(request: Request) {
       });
     }
 
-    if (typeof provider.health === "function") {
-      await provider.health();
-    }
-    const providerStatus = provider.getStatus?.() ?? {
+    const providerStatus = typeof provider.health === "function"
+      ? await provider.health()
+      : provider.getStatus?.() ?? {
       provider: provider.name,
       model: provider.model,
       state: "configured" as const,

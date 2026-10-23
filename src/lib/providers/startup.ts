@@ -1,11 +1,11 @@
 import { selectedModelProviderStatus } from "./openai-compatible";
-import { getTogetherConfigurationDiagnostics } from "./configuration";
+import { getOpenRouterConfigurationDiagnostics } from "./openrouter-configuration";
 import { toMedharyaAlphaProviderStatus } from "./alpha";
 
-const PROVIDERS = ["none", "openai-compatible", "together-ai", "ollama", "medharya-alpha"] as const;
+const PROVIDERS = ["none", "openai-compatible", "openrouter", "ollama", "medharya-alpha"] as const;
 const STATES = ["configured", "unavailable"] as const;
 const REASONS = ["missing-config", "auth", "rate-limit", "timeout", "transient-error", "model-missing", "invalid-response"] as const;
-const TOGETHER_VARIABLES = ["TOGETHER_API_KEY", "TOGETHER_MODEL", "TOGETHER_BASE_URL", "TOGETHER_TIMEOUT_MS"] as const;
+const OPENROUTER_VARIABLES = ["OPENROUTER_API_KEY", "OPENROUTER_MODEL", "OPENROUTER_BASE_URL", "OPENROUTER_TIMEOUT_MS"] as const;
 
 function boundedTimeout(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) && value > 0
@@ -28,7 +28,7 @@ export function getProviderStartupDiagnostics(
         identityVerified: false,
       }, { env })
     : status;
-  const together = getTogetherConfigurationDiagnostics(env);
+  const openrouter = getOpenRouterConfigurationDiagnostics(env);
 
   // Select literals from allowlists instead of forwarding any provider-owned
   // strings: even model names and URLs can contain accidentally pasted secrets.
@@ -40,16 +40,16 @@ export function getProviderStartupDiagnostics(
       : REASONS.find((reason) => reason === selected.reason) ?? "unknown",
     identityVerified: false as const,
     inferenceVerified: false as const,
-    together: {
-      selected: together.selected === true,
-      apiKeyConfigured: together.apiKeyConfigured === true,
-      modelConfigured: together.modelConfigured === true,
-      baseUrlConfigured: together.baseUrlConfigured === true,
-      baseUrlValid: together.baseUrlValid === true,
-      timeoutMs: boundedTimeout(together.timeoutMs),
-      timeoutConfigured: together.timeoutConfigured === true,
-      ready: together.ready === true,
-      missing: TOGETHER_VARIABLES.filter((variable) => Array.isArray(together.missing) && together.missing.includes(variable)),
+    openrouter: {
+      selected: openrouter.selected === true,
+      apiKeyConfigured: openrouter.apiKeyConfigured === true,
+      modelConfigured: openrouter.modelConfigured === true,
+      baseUrlConfigured: openrouter.baseUrlConfigured === true,
+      baseUrlValid: openrouter.baseUrlValid === true,
+      timeoutMs: boundedTimeout(openrouter.timeoutMs),
+      timeoutConfigured: openrouter.timeoutConfigured === true,
+      ready: openrouter.ready === true,
+      missing: OPENROUTER_VARIABLES.filter((variable) => Array.isArray(openrouter.missing) && openrouter.missing.includes(variable)),
     },
   };
 }

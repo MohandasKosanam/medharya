@@ -1,4 +1,4 @@
-export type ResearchProvider = "brave-search";
+export type ResearchProvider = "brave-search" | "tinyfish-search";
 
 export type ResearchSourceQuality = "official-documentation" | "primary-source" | "reputable-secondary" | "unknown";
 export type ResearchFreshness = "recent" | "dated" | "stale" | "undated";
